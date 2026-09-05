@@ -1,0 +1,17 @@
+[Unit]
+Description=sing-box split TUN (ru-blocked -> proxy, rest -> direct)
+Documentation=https://sing-box.sagernet.org
+After=network-online.target xray.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/sing-box run -c /usr/local/etc/singbox-tun/config.json
+Restart=always
+RestartSec=5
+LimitNOFILE=65535
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
