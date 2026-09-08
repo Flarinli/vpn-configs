@@ -28,9 +28,15 @@ wc -l "$WORK/ru-blocked-all.txt"
 ls -la "$WORK/geoip.dat"
 
 echo "== 2/4: домены -> rule-set json =="
-python3 - "$WORK/ru-blocked-all.txt" "$WORK/rules-geosite.json" <<'PY'
+# Ресурсы вне списка runetfreedom, которые тоже должны идти через VPN —
+# переживают пересборку списка блокировок.
+EXTRA_PROXY_DOMAINS=(
+  "ggsel.net"
+  "ggsel.com"
+)
+python3 - "$WORK/ru-blocked-all.txt" "$WORK/rules-geosite.json" "${EXTRA_PROXY_DOMAINS[@]}" <<'PY'
 import json, sys
-src, dst = sys.argv[1], sys.argv[2]
+src, dst, *extra = sys.argv[1:]
 suffixes = set()
 with open(src, encoding='utf-8', errors='ignore') as f:
     for line in f:
@@ -43,7 +49,8 @@ with open(src, encoding='utf-8', errors='ignore') as f:
             continue
         if d and all(ord(c) < 128 for c in d):
             suffixes.add(d)
-print("уникальных доменов:", len(suffixes))
+suffixes.update(x.lower() for x in extra)
+print("уникальных доменов:", len(suffixes), f"(+{len(extra)} вручную добавленных)")
 json.dump({"version": 3, "rules": [{"domain_suffix": sorted(suffixes)}]}, open(dst, "w"))
 PY
 
