@@ -33,7 +33,14 @@ install -m 644 "$SRC/rules/geosite-ru-blocked.srs" /usr/local/etc/singbox-tun/ru
 install -m 644 "$SRC/rules/geoip-ru-blocked.srs" /usr/local/etc/singbox-tun/rules/
 
 echo "== 3/6: конфиг TUN =="
-install -m 644 "$SRC/config.json" /usr/local/etc/singbox-tun/config.json
+DEFAULT_IFACE="$(ip -4 route show default | head -1 | awk '{for(i=1;i<=NF;i++) if ($i=="dev") print $(i+1)}')"
+if [ -z "$DEFAULT_IFACE" ]; then
+  echo "не удалось определить дефолтный сетевой интерфейс (ip route show default пуст)" >&2
+  exit 1
+fi
+echo "дефолтный интерфейс: $DEFAULT_IFACE"
+sed "s/__DEFAULT_IFACE__/$DEFAULT_IFACE/" "$SRC/config.json" > /usr/local/etc/singbox-tun/config.json
+chmod 644 /usr/local/etc/singbox-tun/config.json
 /usr/local/bin/sing-box check -c /usr/local/etc/singbox-tun/config.json && echo "конфиг валиден"
 
 echo "== 4/6: helper vpn-urls =="
