@@ -1,0 +1,665 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+vpn-autoselect — автоматический выбор самого быстрого VPN-узла из подписки.
+
+Что делает:
+  1. Забирает подписку (список vless:// trojan:// ss:// vmess://) напрямую, в обход прокси/TUN.
+  2. Парсит узлы и TCP-пингует их параллельно (медиана по нескольким замерам).
+  3. Генерирует конфиг xray: входы 127.0.0.1:20808 (SOCKS) / 20809 (HTTP) не меняются,
+     все живые узлы — как outbounds, балансировщик strategy=leastPing + BurstObservatory:
+     xray сам непрерывно меряет реальную задержку через узлы и переключается на лучший.
+  4. Валидирует конфиг (xray -test), атомарно подменяет /usr/local/etc/xray/config.json,
+     перезапускает xray и проверяет туннель. При неудаче — откат на предыдущий конфиг.
+
+Безопасность сети:
+  - Никаких TUN/маршрутов/системного прокси — сервис только локальные входы xray.
+  - Правила LAN сохраняются: geoip:private и domain:gosniias.lan -> direct-out.
+  - Прямые запросы (подписка, пинг) биндятся на физический интерфейс, чтобы
+    работать даже когда поднят Happ TUN.
+
+Конфиг: /etc/vpn-autoselect.conf (KEY=VALUE).
+"""
+
+import argparse
+import base64
+import concurrent.futures
+import fcntl
+import hashlib
+import ipaddress
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.parse
+import urllib.request
+
+# ---------------------------------------------------------------- defaults ---
+
+CONF_PATH = "/etc/vpn-autoselect.conf"
+
+DEF = {
+    "SUB_URL": "",
+    "NODES_FILE": "",              # альтернатива подписке: локальный файл с URI узлов
+    "XRAY_BIN": "/usr/local/bin/xray",
+    "XRAY_CONF": "/usr/local/etc/xray/config.json",
+    "SYSTEMD_UNIT": "xray.service",
+    "STATUS_DIR": "/var/lib/vpn-autoselect",
+    "TEST_URL": "https://www.youtube.com/generate_204",
+    "PROBE_URL": "https://www.youtube.com/generate_204",  # пробник burstObservatory: нода для leastPing
+                                   # обязана открывать запрещённый ресурс, а не просто быть живой
+    "SUB_TTL": "21600",            # сек: как часто перечитывать подписку при живом туннеле
+    "PING_SAMPLES": "3",
+    "PING_TIMEOUT": "2.0",
+    "PING_TOP": "0",               # сколько лучших узлов класть в конфиг; 0 = все
+    "DIRECT_IFACE": "auto",        # iface для прямых запросов; auto = по умолчному маршруту
+    "EXCLUDE_NAMES": "",           # regex: узлы с совпадающим именем выкидываются (напр. LTE|Россия)
+    "INCLUDE_NAMES": "",           # regex: оставить только совпадающие (если задан)
+    "INCLUDE_HAPP": "auto",        # auto|yes|no: добавить socks://127.0.0.1:10808 (ядро Happ) как кандидата
+    "IN_SOCKS_PORT": "20808",
+    "IN_HTTP_PORT": "20809",
+    "DIRECT_DOMAINS": "domain:gosniias.lan",
+    "CURL_BIN": "/usr/bin/curl",
+}
+
+LOG = lambda msg: print(msg, flush=True)
+
+
+# ----------------------------------------------------------------- config ---
+
+def load_conf(path):
+    cfg = dict(DEF)
+    if path and os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k = k.strip()
+                v = v.strip().strip('"').strip("'")
+                if k in cfg:
+                    cfg[k] = v
+    return cfg
+
+
+# --------------------------------------------------------- network helpers ---
+
+def default_iface():
+    """Имя физического интерфейса основного маршрута + его IP."""
+    try:
+        out = subprocess.run(["ip", "route", "show", "default"],
+                             capture_output=True, text=True, timeout=5).stdout
+        for line in out.splitlines():
+            m = re.search(r"dev (\S+)", line)
+            if m:
+                iface = m.group(1)
+                addr_out = subprocess.run(["ip", "-4", "-o", "addr", "show", "dev", iface],
+                                          capture_output=True, text=True, timeout=5).stdout
+                for a in addr_out.splitlines():
+                    parts = a.split()
+                    if len(parts) >= 4 and parts[3] != "127.0.0.1":
+                        return iface, parts[3].split("/")[0]
+    except Exception:
+        pass
+    return None, None
+
+
+def port_open(host, port, timeout=1.0):
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def curl(url, timeout=10, iface_ip=None, via_socks=None, want_code=None):
+    """curl с явным управлением прокси/интерфейсом. Возвращает (ok, http_code, elapsed)."""
+    cmd = [CFG["CURL_BIN"], "-sS", "-o", "/dev/null",
+           "-w", "%{http_code} %{time_total}",
+           "--max-time", str(timeout)]
+    if via_socks:
+        cmd += ["--proxy", "socks5h://%s" % via_socks]
+    else:
+        cmd += ["--noproxy", "*"]
+    if iface_ip:
+        cmd += ["--interface", iface_ip]
+    cmd.append(url)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
+        code, _, t = (r.stdout.partition(" ") + ("", "", ""))[0], "", r.stdout.partition(" ")[2]
+        parts = r.stdout.split()
+        code = parts[0] if parts else "000"
+        elapsed = parts[1] if len(parts) > 1 else "?"
+        ok = r.returncode == 0 and (want_code is None or code == want_code)
+        return ok, code, elapsed
+    except Exception:
+        return False, "000", "?"
+
+
+CFG = dict(DEF)  # заполнится в main()
+
+
+# --------------------------------------------------------- subscription I/O ---
+
+def fetch_text_direct(url, iface_ip):
+    """GET без прокси, с биндом на физический интерфейс."""
+    if url.startswith("file://"):
+        with open(url[7:], encoding="utf-8") as f:
+            return f.read()
+    if url.startswith("/"):
+        with open(url, encoding="utf-8") as f:
+            return f.read()
+    out = subprocess.run(
+        [CFG["CURL_BIN"], "-fsSL", "--noproxy", "*", "--max-time", "20"] +
+        (["--interface", iface_ip] if iface_ip else []) + [url],
+        capture_output=True, text=True, timeout=30)
+    if out.returncode != 0:
+        raise RuntimeError("curl %s: rc=%d %s" % (url, out.returncode, out.stderr.strip()[:200]))
+    return out.stdout
+
+
+def b64_maybe_decode(s):
+    s = s.strip()
+    if not re.fullmatch(r"[A-Za-z0-9+/\-_=\s]+", s):
+        return s
+    t = re.sub(r"\s+", "", s)
+    t = t.replace("-", "+").replace("_", "/")
+    t += "=" * (-len(t) % 4)
+    try:
+        d = base64.b64decode(t).decode("utf-8", "replace")
+        # декод считаем успешным, только если получился печатаемый текст со схемами
+        if any(x in d for x in ("vless://", "trojan://", "ss://", "vmess://")):
+            return d
+    except Exception:
+        pass
+    return s
+
+
+URI_RE = re.compile(r"(vless|trojan|ss|vmess)://[^\s\"'<>]+", re.I)
+
+
+def extract_uris(text):
+    text = b64_maybe_decode(text)
+    uris = [m.group(0).rstrip(",;)") for m in URI_RE.finditer(text)]
+    # дедуп
+    seen, out = set(), []
+    for u in uris:
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
+
+# ------------------------------------------------------------ URI -> outbound ---
+
+def _alpn_list(q):
+    a = q.get("alpn", "")
+    return [x for x in a.split(",") if x] or None
+
+
+def _stream(net, q, default_sni):
+    """streamSettings по query-параметрам подписки."""
+    sec = q.get("security", "tls" if net in ("tls",) else "none")
+    if sec in ("tls", "reality"):
+        sni = q.get("sni") or q.get("peer") or q.get("host") or default_sni
+        fp = q.get("fp") or "chrome"
+        if sec == "reality":
+            ss = {"serverName": sni, "fingerprint": fp,
+                  "publicKey": q.get("pbk", ""), "shortId": q.get("sid", "")}
+            if q.get("spx"):
+                ss["spiderX"] = q.get("spx")
+        else:
+            ss = {"serverName": sni, "fingerprint": fp, "allowInsecure": False}
+            alpn = _alpn_list(q)
+            if alpn:
+                ss["alpn"] = alpn
+    else:
+        sec, ss = "none", None
+
+    transport = q.get("type", "tcp")
+    ts = None
+    if transport == "ws":
+        path = q.get("path", "/")
+        if path.startswith("/%2") or "%" in path[:2]:
+            path = urllib.parse.unquote(path)
+        ts = {"path": urllib.parse.unquote(path)}
+        if q.get("host"):
+            ts["headers"] = {"Host": q.get("host")}
+    elif transport == "grpc":
+        ts = {"serviceName": q.get("serviceName", ""), "multiMode": q.get("mode") == "multi"}
+    elif transport == "httpupgrade":
+        transport = "httpupgrade"
+        ts = {"path": q.get("path", "/")}
+        if q.get("host"):
+            ts["host"] = q.get("host")
+    elif transport == "xhttp" or transport == "splithttp":
+        ts = {"path": q.get("path", "/"), "mode": q.get("mode", "auto")}
+        if q.get("host"):
+            ts["host"] = q.get("host")
+    elif transport == "tcp" and q.get("headerType") == "http":
+        ts = {"header": {"type": "http",
+                         "request": {"version": "1.1",
+                                     "method": "GET", "path": [q.get("path", "/")],
+                                     "headers": {"Host": [q.get("host", default_sni)]}}}}
+    elif transport in ("tcp", "raw", "none"):
+        transport = "tcp"
+
+    st = {"network": transport, "security": sec}
+    if ss is not None:
+        st["tlsSettings" if sec == "tls" else "realitySettings"] = ss
+    if ts is not None:
+        st[transport + "Settings"] = ts
+    return st
+
+
+def parse_uri(uri):
+    """URI -> (name, host, port, outbound_dict) или None."""
+    scheme = uri.split("://", 1)[0].lower()
+    if scheme == "vmess":
+        raw = uri.split("://", 1)[1]
+        pad = "=" * (-len(raw) % 4)
+        try:
+            j = json.loads(base64.b64decode(raw + pad).decode("utf-8", "replace"))
+        except Exception:
+            return None
+        host, port = j.get("add"), int(j.get("port", 0))
+        if not host or not port:
+            return None
+        q = {"type": j.get("net", "tcp"), "security": j.get("tls", "") or "none",
+             "sni": j.get("sni", ""), "host": j.get("host", ""), "path": j.get("path", ""),
+             "fp": j.get("fp", ""), "alpn": j.get("alpn", ""),
+             "serviceName": j.get("path", "") if j.get("net") == "grpc" else ""}
+        ob = {
+            "tag": "",  # проставим позже
+            "protocol": "vmess",
+            "settings": {"vnext": [{"address": host, "port": port,
+                                    "users": [{"id": j.get("id", ""),
+                                               "security": j.get("scy") or "auto",
+                                               "alterId": int(j.get("aid") or 0)}]}]},
+            "streamSettings": _stream(q.get("type"), q, j.get("sni") or host),
+        }
+        return (j.get("ps") or "%s:%s" % (host, port)), host, port, ob
+
+    m = re.match(r"^(vless|trojan|ss)://([^#]*)(?:#(.*))?$", uri)
+    if not m:
+        return None
+    scheme, body, frag = m.group(1), m.group(2), m.group(3) or ""
+    name = urllib.parse.unquote(frag).strip()
+
+    if scheme == "ss":
+        # ss://method:pass@host:port  |  ss://base64(method:pass)@host:port  |  ss://base64(all)#name
+        at = body.rfind("@")
+        if at == -1:
+            pad = "=" * (-len(body) % 4)
+            try:
+                dec = base64.b64decode(body + pad).decode("utf-8", "replace")
+            except Exception:
+                return None
+            cred, hostport = dec.rsplit("@", 1)
+        else:
+            cred, hostport = body[:at], body[at + 1:]
+            if ":" not in cred:
+                pad = "=" * (-len(cred) % 4)
+                cred = base64.b64decode(cred + "=" * (-len(cred) % 4)).decode("utf-8", "replace")
+        method, _, password = cred.partition(":")
+        host, _, port_s = hostport.rpartition(":")
+        port_s = port_s.split("/")[0].split("?")[0]
+        try:
+            port = int(port_s)
+        except ValueError:
+            return None
+        ob = {"tag": "", "protocol": "shadowsocks",
+              "settings": {"servers": [{"address": host, "port": port,
+                                        "method": method, "password": password}]}}
+        return name or "%s:%s" % (host, port), host, port, ob
+
+    # vless / trojan: userinfo@host:port?query
+    m2 = re.match(r"^([^@]+)@(\[[^\]]+\]|[^:?]+)(?::(\d+))?(?:\?(.*))?$", body)
+    if not m2:
+        return None
+    userinfo, host, port_s, qs = m2.group(1), m2.group(2).strip("[]"), m2.group(3), m2.group(4) or ""
+    try:
+        port = int(port_s)
+    except (TypeError, ValueError):
+        return None
+    q = dict(urllib.parse.parse_qsl(qs, keep_blank_values=True))
+
+    if scheme == "vless":
+        user = {"id": urllib.parse.unquote(userinfo), "encryption": "none"}
+        if q.get("flow"):
+            user["flow"] = q["flow"]
+        ob = {"tag": "", "protocol": "vless",
+              "settings": {"vnext": [{"address": host, "port": port, "users": [user]}]}}
+    else:  # trojan
+        q.setdefault("security", "tls")
+        ob = {"tag": "", "protocol": "trojan",
+              "settings": {"servers": [{"address": host, "port": port,
+                                        "password": urllib.parse.unquote(userinfo), "level": 0}]}}
+    ob["streamSettings"] = _stream(q.get("type", "tcp"), q, q.get("sni") or host)
+    return name or "%s:%s" % (host, port), host, port, ob
+
+
+# ------------------------------------------------------------------- ping ---
+
+def tcp_ping(args):
+    host, port, samples, timeout, bind_ip = args
+    times = []
+    for _ in range(samples):
+        t0 = time.monotonic()
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(timeout)
+            if bind_ip:
+                try:
+                    s.bind((bind_ip, 0))
+                except OSError:
+                    pass
+            s.connect((host, port))
+            times.append((time.monotonic() - t0) * 1000.0)
+            s.close()
+        except OSError:
+            pass
+        time.sleep(0.05)
+    if not times:
+        return None
+    times.sort()
+    n = len(times)
+    med = times[n // 2] if n % 2 else (times[n // 2 - 1] + times[n // 2]) / 2
+    return med
+
+
+# ------------------------------------------------------------- xray config ---
+
+def build_config(nodes, iface):
+    socks_port = int(CFG["IN_SOCKS_PORT"])
+    http_port = int(CFG["IN_HTTP_PORT"])
+
+    sniff = {"enabled": True, "destOverride": ["http", "tls", "quic"], "routeOnly": True}
+    inbounds = [
+        {"tag": "socks-in", "listen": "127.0.0.1", "port": socks_port,
+         "protocol": "socks", "settings": {"auth": "noauth", "udp": True}, "sniffing": sniff},
+        {"tag": "http-in", "listen": "127.0.0.1", "port": http_port,
+         "protocol": "http", "settings": {"auth": "noauth"}, "sniffing": sniff},
+    ]
+
+    direct = {"tag": "direct-out", "protocol": "freedom",
+              "streamSettings": {"sockopt": {"interface": iface}} if iface else {}}
+    outbounds = [direct] + [n["outbound"] for n in nodes]
+
+    rules = [
+        {"type": "field", "ip": ["geoip:private"], "outboundTag": "direct-out"},
+    ]
+    for d in [x for x in CFG["DIRECT_DOMAINS"].split(",") if x.strip()]:
+        rules.append({"type": "field", "domain": [d.strip()], "outboundTag": "direct-out"})
+    rules.append({"type": "field",
+                  "inboundTag": ["socks-in", "http-in"],
+                  "network": "tcp,udp",
+                  "balancerTag": "bal"})
+
+    cfg = {
+        "log": {"loglevel": "warning"},
+        "inbounds": inbounds,
+        "outbounds": outbounds,
+        "routing": {
+            "domainStrategy": "AsIs",
+            "balancers": [{"tag": "bal", "selector": ["node-"],
+                           "strategy": {"type": "leastPing"}}],
+            "rules": rules,
+        },
+        "burstObservatory": {
+            "subjectSelector": ["node-"],
+            "pingConfig": {
+                "destination": CFG["PROBE_URL"],
+                "connectivity": CFG["PROBE_URL"],
+                "interval": "1m",
+                "timeout": "4s",
+                "sampling": 2,
+                "idleTimeout": "30s",
+            },
+        },
+    }
+    return cfg
+
+
+def xray_validate(path):
+    r = subprocess.run([CFG["XRAY_BIN"], "run", "-test", "-c", path],
+                       capture_output=True, text=True, timeout=30)
+    return r.returncode == 0, (r.stdout + r.stderr).strip()[:500]
+
+
+# ------------------------------------------------------------------- main ---
+
+def main():
+    global CFG
+    ap = argparse.ArgumentParser(description="auto-select fastest VPN node for system xray")
+    ap.add_argument("--conf", default=CONF_PATH)
+    ap.add_argument("--dry-run", action="store_true", help="не менять конфиг/xray, только отчёт")
+    ap.add_argument("--force", action="store_true", help="игнорировать живой туннель и пересобрать")
+    ap.add_argument("--no-restart", action="store_true", help="обновить конфиг без перезапуска xray")
+    args = ap.parse_args()
+
+    CFG = load_conf(args.conf)
+    if not CFG["SUB_URL"] and not CFG["NODES_FILE"]:
+        LOG("[ERR] SUB_URL не задан в %s" % args.conf)
+        return 2
+
+    os.makedirs(CFG["STATUS_DIR"], exist_ok=True)
+    lock = open(os.path.join(CFG["STATUS_DIR"], "run.lock"), "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        LOG("[WARN] другая копия уже работает — выходим")
+        return 0
+
+    iface, iface_ip = (None, None)
+    if CFG["DIRECT_IFACE"].lower() == "auto":
+        iface, iface_ip = default_iface()
+    elif CFG["DIRECT_IFACE"] not in ("", "no", "off"):
+        iface = CFG["DIRECT_IFACE"]
+    LOG("[i] прямой iface: %s (%s)" % (iface or "-", iface_ip or "-"))
+
+    socks = "127.0.0.1:%s" % CFG["IN_SOCKS_PORT"]
+    sub_cache = os.path.join(CFG["STATUS_DIR"], "nodes.txt")
+    sub_meta = os.path.join(CFG["STATUS_DIR"], "sub.json")
+
+    # --- 1. быстрый health-check текущего туннеля ------------------------------
+    healthy, code, t = curl(CFG["TEST_URL"], timeout=8, via_socks=socks, want_code="204")
+    LOG("[i] туннель %s: http=%s (%ss)" % ("ЖИВ" if healthy else "не работает", code, t))
+
+    if healthy and not args.force:
+        # туннель жив — нужен ли refresh подписки?
+        sub_age = time.time() - os.path.getmtime(sub_cache) if os.path.exists(sub_cache) else 1e9
+        if sub_age < int(CFG["SUB_TTL"]):
+            LOG("[ok] всё хорошо, подписка свежая (%.1f ч) — ничего не делаем" % (sub_age / 3600))
+            write_status(True, "noop")
+            return 0
+        LOG("[i] подписка старше %s ч — обновляю" % (int(CFG["SUB_TTL"]) / 3600))
+
+    # --- 2. получаем список узлов ---------------------------------------------
+    src = CFG["SUB_URL"] or CFG["NODES_FILE"]
+    try:
+        text = fetch_text_direct(src, iface_ip)
+    except Exception as e:
+        LOG("[WARN] не удалось получить подписку: %s" % e)
+        if os.path.exists(sub_cache):
+            LOG("[i] использую кэш %s" % sub_cache)
+            text = open(sub_cache, encoding="utf-8").read()
+        else:
+            write_status(healthy, "sub-fetch-failed")
+            return 1
+    else:
+        with open(sub_cache, "w", encoding="utf-8") as f:
+            f.write(text)
+
+    uris = extract_uris(text)
+    if not uris:
+        LOG("[ERR] в подписке не найдено узлов (vless/trojan/ss/vmess)")
+        write_status(healthy, "no-nodes")
+        return 1
+    LOG("[i] узлов в подписке: %d" % len(uris))
+
+    parsed = []
+    seen = set()
+    excl = re.compile(CFG["EXCLUDE_NAMES"], re.I) if CFG["EXCLUDE_NAMES"] else None
+    incl = re.compile(CFG["INCLUDE_NAMES"], re.I) if CFG["INCLUDE_NAMES"] else None
+    for u in uris:
+        r = parse_uri(u)
+        if not r:
+            continue
+        name, host, port, ob = r
+        if excl and excl.search(name):
+            continue
+        if incl and not incl.search(name):
+            continue
+        key = (host, port,
+               json.dumps(ob.get("settings", {}), sort_keys=True),
+               json.dumps(ob.get("streamSettings", {}), sort_keys=True))
+        if key in seen:
+            continue
+        seen.add(key)
+        parsed.append({"name": name, "host": host, "port": port, "outbound": ob})
+    if CFG["EXCLUDE_NAMES"] or CFG["INCLUDE_NAMES"]:
+        LOG("[i] после фильтра имён (EXCLUDE=%r INCLUDE=%r): %d узлов" % (
+            CFG["EXCLUDE_NAMES"], CFG["INCLUDE_NAMES"], len(parsed)))
+
+    # опционально: локальное ядро Happ как кандидат (когда GUI подключён)
+    if CFG["INCLUDE_HAPP"].lower() in ("auto", "yes"):
+        if port_open("127.0.0.1", 10808, 1.0):
+            parsed.append({"name": "Happ (локальное ядро :10808)", "host": "127.0.0.1",
+                           "port": 10808,
+                           "outbound": {"tag": "node-happ", "protocol": "socks",
+                                        "settings": {"servers": [{"address": "127.0.0.1",
+                                                                  "port": 10808}]}}})
+            LOG("[i] Happ-ядро на :10808 живо — добавлено кандидатом")
+
+    if not parsed:
+        LOG("[ERR] ни один URI не распарсился")
+        write_status(healthy, "parse-failed")
+        return 1
+
+    # --- 3. пинг ---------------------------------------------------------------
+    samples = int(CFG["PING_SAMPLES"])
+    timeout = float(CFG["PING_TIMEOUT"])
+    jobs = [(p["host"], p["port"], samples, timeout, iface_ip) for p in parsed]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as ex:
+        results = list(ex.map(tcp_ping, jobs))
+
+    alive = []
+    for p, ms in zip(parsed, results):
+        if ms is not None:
+            p["ping_ms"] = round(ms, 1)
+            alive.append(p)
+    if not alive:
+        LOG("[ERR] ни один узел не отвечает по TCP — оставляю текущий конфиг")
+        write_status(False, "all-dead")
+        return 1
+
+    alive.sort(key=lambda p: p["ping_ms"])
+    limit = int(CFG["PING_TOP"])
+    rest = [p for p in parsed if "ping_ms" not in p]  # не ответили по TCP сейчас
+    if limit > 0:
+        top = alive[:limit]
+    else:
+        top = alive + rest  # все узлы: живые по пингу, затем остальные
+    LOG("[i] TCP-пинг (медиана из %d):" % samples)
+    for p in alive:
+        mark = "*" if p in top else " "
+        LOG("    %s %7.1f ms  %s" % (mark, p["ping_ms"], p["name"]))
+    if rest and limit <= 0:
+        LOG("[i] ещё %d узл. не ответили по TCP — добавлены в конец (наблюдатель оживит при необходимости)" % len(rest))
+
+    for i, p in enumerate(top, 1):
+        p["outbound"]["tag"] = "node-%02d" % i
+
+    # --- 4. конфиг xray --------------------------------------------------------
+    cfg = build_config(top, iface)
+    conf_dir = os.path.dirname(CFG["XRAY_CONF"]) or "."
+    fd, tmp = tempfile.mkstemp(dir=conf_dir, prefix=".autoselect.", suffix=".json")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, ensure_ascii=False, indent=1)
+    os.chmod(tmp, 0o644)
+
+    ok, msg = xray_validate(tmp)
+    if not ok:
+        LOG("[ERR] сгенерированный конфиг невалиден: %s" % msg)
+        os.unlink(tmp)
+        write_status(healthy, "invalid-config")
+        return 1
+    LOG("[i] конфиг валиден (%d узлов: %s)" % (
+        len(top), ", ".join(p["name"] for p in top)))
+
+    if args.dry_run:
+        LOG("[dry-run] конфиг: %s ; узлы: %s" % (tmp, [p["outbound"]["tag"] for p in top]))
+        return 0
+
+    # --- 5. атомарная подмена + рестарт + проверка ------------------------------
+    backup = CFG["XRAY_CONF"] + ".autoselect.bak"
+    try:
+        if os.path.exists(CFG["XRAY_CONF"]):
+            with open(CFG["XRAY_CONF"], "rb") as f:
+                old = f.read()
+            with open(backup, "wb") as f:
+                f.write(old)
+        os.replace(tmp, CFG["XRAY_CONF"])
+    except PermissionError:
+        LOG("[ERR] нет прав на %s — запуск от root?" % CFG["XRAY_CONF"])
+        return 1
+
+    if args.no_restart:
+        LOG("[ok] конфиг обновлён без перезапуска xray (применится при рестарте)")
+        write_status(None, "config-updated", top)
+        return 0
+
+    subprocess.run(["systemctl", "restart", CFG["SYSTEMD_UNIT"]],
+                   capture_output=True, timeout=60)
+    time.sleep(1.5)
+
+    ok2, code2, t2 = curl(CFG["TEST_URL"], timeout=10, via_socks=socks, want_code="204")
+    attempt = 1
+    while not ok2 and attempt < 3:
+        time.sleep(3)
+        ok2, code2, t2 = curl(CFG["TEST_URL"], timeout=10, via_socks=socks, want_code="204")
+        attempt += 1
+
+    if ok2:
+        LOG("[ok] xray перезапущен, туннель работает (http=%s, %ss)" % (code2, t2))
+        write_status(True, "applied", top)
+        return 0
+
+    # откат
+    LOG("[ERR] туннель после применения не работает (http=%s) — откат" % code2)
+    if os.path.exists(backup):
+        shutil_copy(backup, CFG["XRAY_CONF"])
+        subprocess.run(["systemctl", "restart", CFG["SYSTEMD_UNIT"]], capture_output=True, timeout=60)
+        time.sleep(1.5)
+        ok3, code3, _ = curl(CFG["TEST_URL"], timeout=10, via_socks=socks, want_code="204")
+        LOG("[i] после отката: http=%s" % code3)
+    write_status(False, "rollback", top)
+    return 1
+
+
+def shutil_copy(src, dst):
+    import shutil
+    shutil.copy2(src, dst)
+
+
+def write_status(healthy, action, nodes=None):
+    st = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+          "healthy": healthy, "action": action,
+          "nodes": [{"tag": n["outbound"]["tag"], "name": n["name"],
+                     "host": n["host"], "port": n["port"],
+                     "ping_ms": n.get("ping_ms")} for n in (nodes or [])]}
+    try:
+        with open(os.path.join(CFG["STATUS_DIR"], "status.json"), "w", encoding="utf-8") as f:
+            json.dump(st, f, ensure_ascii=False, indent=1)
+    except OSError:
+        pass
+
+
+if __name__ == "__main__":
+    sys.exit(main())
