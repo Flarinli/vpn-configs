@@ -9,19 +9,21 @@
 
 ```
 приложения → sing-box TUN (systemd/launchd, root)
-               ├─ домен/IP из ru-blocked или из вашего списка → прокси (существующий VPN-клиент) → узел
+               ├─ домен/IP из ru-blocked или из вашего списка → системный xray → узел (автоселект)
                └─ всё остальное → напрямую
 ```
 
-sing-box берёт на себя только маршрутизацию (TUN + правила). Сам VPN-туннель
-(протокол, сервер, подписка) обеспечивает уже имеющийся у вас клиент —
-на macOS это [Happ](https://happ.su) в режиме прокси, на Linux — `vpn-autoselect`
-(xray с автовыбором сервера). Настройка не заменяет их, а достраивает сплит поверх.
+На обеих платформах туннель обеспечивает связка **системный xray + `vpn-autoselect`**:
+скрипт по таймеру тянет подписку, обновляет список нод, а xray сам непрерывно
+выбирает лучшую ноду (`leastPing`), пробуя `youtube/generate_204` — т.е. нода
+гарантированно открывает запрещённые ресурсы. Happ выведен из цепочки; на macOS
+осталась возможность отката на старый Happ-вариант (`install.sh rollback`).
 
 ## Структура
 
-- [`macos/`](macos/) — установка на macOS поверх Happ (socks 127.0.0.1:10808)
-- [`linux/`](linux/) — установка на Linux (systemd) поверх xray/vpn-autoselect (socks 127.0.0.1:20808)
+- [`macos/`](macos/) — macOS: sing-box (launchd) + xray (brew) + автоселект (launchd-таймер)
+- [`linux/`](linux/) — Linux (systemd): та же схема, socks 127.0.0.1:20808
+- [`autoselect/`](autoselect/) — скрипт `vpn-autoselect` и пример конфига (общий для платформ)
 - [`tools/build-rules.sh`](tools/build-rules.sh) — пересборка списков блокировок (обновление рекомендуется раз в 1-2 месяца)
 
 Каждая платформенная папка самодостаточна: конфиг, systemd/launchd-юнит,
@@ -30,10 +32,10 @@ sing-box берёт на себя только маршрутизацию (TUN +
 ## Быстрый старт
 
 ```bash
-# macOS
+# macOS — после установки впиши SUB_URL в /usr/local/etc/vpn-autoselect.conf
 cd macos && sudo bash install.sh
 
-# Linux
+# Linux (vpn-autoselect уже установлен отдельно; его исходники — в autoselect/)
 cd linux && sudo bash install.sh
 ```
 
@@ -55,15 +57,19 @@ curl --noproxy '*' -s https://api.ipify.org             # RU IP = остальн
 curl --noproxy '*' -sI https://www.instagram.com/ | head -1  # 200 = заблокированные через VPN
 ```
 
-macOS: `launchctl print system/com.singbox.tun` и `/var/log/singbox-tun.log`
-Linux: `systemctl status singbox-tun` и `journalctl -u singbox-tun -f`
+macOS: `launchctl print system/com.singbox.tun`, `/usr/local/var/log/xray.log`,
+`cat /usr/local/var/vpn-autoselect/status.json` (текущая нода и здоровье)
+Linux: `systemctl status singbox-tun xray`, `journalctl -u singbox-tun -f`,
+`cat /var/lib/vpn-autoselect/status.json`
 
 ## Известные нюансы
 
 - Некоторые гос-сайты (напр. `mos.ru`) требуют сертификат НУЦ Минцифры в
   системном хранилище — из консоли (`curl`) это выглядит как ошибка TLS,
   в браузере с установленным сертификатом всё работает. К сплиту отношения не имеет.
-- На macOS **не включайте** собственный TUN-режим Happ — он перехватит весь
-  трафик и сплит перестанет работать (Happ должен быть в режиме прокси).
+- Если запущен Happ с собственным TUN — два TUN конфликтуют, сплит развалится.
+  Закройте Happ или выключите в нём TUN (в новой схеме он не нужен).
+- LTE-узлы подписки (квота 0 ГБ) исключены фильтром `EXCLUDE_NAMES` в конфиге
+  автоселекта; провайдерский узел «Автовыбор» и российские узлы — тоже.
 - Списки блокировок стареют — пересобирайте `tools/build-rules.sh` время от
   времени и переустанавливайте (`install.sh`) на каждой машине.

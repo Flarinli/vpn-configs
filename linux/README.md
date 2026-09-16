@@ -1,11 +1,20 @@
 # Linux — сплит-VPN поверх vpn-autoselect (xray)
 
+## Как работает
+
+- `vpn-autoselect` (systemd-таймер, каждые 10 мин) тянет подписку, обновляет
+  список нод xray; выбор ноды — `leastPing` внутри xray, пробник —
+  `https://www.youtube.com/generate_204` (нода обязана открывать запрещённые).
+- Исходники скрипта — в [`../autoselect/`](../autoselect/); на хосте живёт в
+  `/usr/local/bin/vpn-autoselect`, конфиг — `/etc/vpn-autoselect.conf`.
+- Статус/текущая нода: `cat /var/lib/vpn-autoselect/status.json`.
+- Happ выведен из ротации (`INCLUDE_HAPP=no`); LTE-узлы с нулевой квотой
+  исключены (`EXCLUDE_NAMES`).
+
 ## Предпосылки
 
 - Установлен и работает `vpn-autoselect` (xray с автовыбором сервера из
-  подписки), слушающий `socks 127.0.0.1:20808`. Это отдельный компонент —
-  данный проект его не разворачивает, только достраивает сплит-маршрутизацию
-  поверх уже поднятого туннеля.
+  подписки), слушающий `socks 127.0.0.1:20808`.
 - Если ваш xray/vpn-autoselect слушает другой порт — поправьте
   `server_port` в [`config.json`](config.json) (outbound `proxy`) до установки.
 
@@ -51,5 +60,7 @@ vpn-urls list
 
 - **`socks: connection refused` в логе** — `vpn-autoselect`/xray не запущен
   или слушает другой порт, проверьте `systemctl status xray` и порт в конфиге.
+- **Откат правок автоселекта** — бэкапы на хосте:
+  `/usr/local/bin/vpn-autoselect.bak-*`, `/etc/vpn-autoselect.conf.bak-*`.
 - **Список блокировок устарел** — пересоберите его `../tools/build-rules.sh`
   и повторите `install.sh`.
