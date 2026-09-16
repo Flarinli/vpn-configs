@@ -1,14 +1,20 @@
-# macOS — сплит-VPN поверх Happ
+# macOS — сплит-VPN (sing-box TUN + системный xray + автоселект ноды)
+
+## Как работает
+
+- sing-box TUN (LaunchDaemon `com.singbox.tun`) пускает напрямую всё, кроме ru-blocked.
+- ru-blocked-трафик уходит в socks `127.0.0.1:20808` — системный xray
+  (LaunchDaemon `local.xray`, ставится из brew).
+- `vpn-autoselect` (launchd `local.vpn-autoselect`, каждые 10 мин) тянет подписку,
+  обновляет список нод xray; выбор ноды — leastPing внутри xray, пробник —
+  `https://www.youtube.com/generate_204` (нода обязана открывать запрещённые ресурсы).
+- Happ не используется. Откат на старый Happ-вариант:
+  `sudo bash install.sh rollback` (конфиг TUN восстанавливается из `config.json.happ.bak`).
 
 ## Предпосылки
 
-- Установлен [Happ](https://happ.su) с рабочей подпиской/сервером.
-- **В Happ выключен собственный TUN**: Настройки → Advanced → TUN → off.
-  Если TUN Happ включён, он перехватит весь системный трафик через `auto_route`,
-  и наш сплит-демон работать не будет (два TUN конфликтуют).
-- Happ подключается как обычно — его ядро при этом слушает
-  `socks 127.0.0.1:10808` (порт по умолчанию), через который наш TUN
-  отправляет заблокированные ресурсы.
+- Подписка VPN (URL в `/usr/local/etc/vpn-autoselect.conf`).
+- Homebrew.
 
 ## Установка
 
@@ -17,11 +23,15 @@ sudo bash install.sh
 ```
 
 Скрипт:
-1. Берёт бинарник `sing-box` из `Happ.app` (либо использует уже установленный
-   в PATH — например, `brew install sing-box`).
-2. Кладёт `rules/*.srs` и `config.json` в `/usr/local/etc/singbox-tun/`.
-3. Ставит helper `vpn-urls` в `/usr/local/bin/`.
-4. Регистрирует `com.singbox.tun.plist` как LaunchDaemon (root, автозапуск).
+1. Ставит `sing-box` (brew) и `xray` (brew).
+2. Кладёт `rules/*.srs`, `config.json` (proxy → 20808) в `/usr/local/etc/singbox-tun/`.
+3. Ставит helper `vpn-urls` и `vpn-autoselect` в `/usr/local/bin/`.
+4. Регистрирует LaunchDaemons: `com.singbox.tun`, `local.xray`,
+   `local.vpn-autoselect` (таймер обновления подписки).
+5. Перед первым запуском впиши `SUB_URL` в `/usr/local/etc/vpn-autoselect.conf`,
+   если его там ещё нет (при установке создаётся из `autoselect/vpn-autoselect.conf.example`).
+
+Старый конфиг TUN сохраняется в `config.json.happ.bak` (для rollback).
 
 ## Проверка
 
