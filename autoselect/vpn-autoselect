@@ -40,7 +40,8 @@ import urllib.request
 
 # ---------------------------------------------------------------- defaults ---
 
-CONF_PATH = "/etc/vpn-autoselect.conf"
+IS_MAC = sys.platform == "darwin"
+CONF_PATH = "/usr/local/etc/vpn-autoselect.conf" if IS_MAC else "/etc/vpn-autoselect.conf"
 
 DEF = {
     "SUB_URL": "",
@@ -48,7 +49,8 @@ DEF = {
     "XRAY_BIN": "/usr/local/bin/xray",
     "XRAY_CONF": "/usr/local/etc/xray/config.json",
     "SYSTEMD_UNIT": "xray.service",
-    "STATUS_DIR": "/var/lib/vpn-autoselect",
+    "STATUS_DIR": "/usr/local/var/vpn-autoselect" if IS_MAC else "/var/lib/vpn-autoselect",
+    "LAUNCHD_LABEL": "local.xray",  # macOS: label LaunchDaemon для рестарта вместо systemd
     "TEST_URL": "https://www.youtube.com/generate_204",
     "PROBE_URL": "https://www.youtube.com/generate_204",  # пробник burstObservatory: нода для leastPing
                                    # обязана открывать запрещённый ресурс, а не просто быть живой
@@ -92,6 +94,16 @@ def load_conf(path):
 def default_iface():
     """Имя физического интерфейса основного маршрута + его IP."""
     try:
+        if IS_MAC:
+            out = subprocess.run(["route", "-n", "get", "default"],
+                                 capture_output=True, text=True, timeout=5).stdout
+            m = re.search(r"interface: (\S+)", out)
+            if not m:
+                return (None, None)
+            iface = m.group(1)
+            ip_out = subprocess.run(["ipconfig", "getifaddr", iface],
+                                    capture_output=True, text=True, timeout=5).stdout.strip()
+            return (iface, ip_out or None)
         out = subprocess.run(["ip", "route", "show", "default"],
                              capture_output=True, text=True, timeout=5).stdout
         for line in out.splitlines():
@@ -426,6 +438,16 @@ def build_config(nodes, iface):
     return cfg
 
 
+def restart_xray():
+    """Рестарт xray: systemd на Linux, launchctl на macOS."""
+    if IS_MAC:
+        return subprocess.run(["launchctl", "kickstart", "-k",
+                               "system/" + CFG["LAUNCHD_LABEL"]],
+                              capture_output=True, text=True, timeout=60)
+    return subprocess.run(["systemctl", "restart", CFG["SYSTEMD_UNIT"]],
+                          capture_output=True, text=True, timeout=60)
+
+
 def xray_validate(path):
     r = subprocess.run([CFG["XRAY_BIN"], "run", "-test", "-c", path],
                        capture_output=True, text=True, timeout=30)
@@ -615,8 +637,7 @@ def main():
         write_status(None, "config-updated", top)
         return 0
 
-    subprocess.run(["systemctl", "restart", CFG["SYSTEMD_UNIT"]],
-                   capture_output=True, timeout=60)
+    restart_xray()
     time.sleep(1.5)
 
     ok2, code2, t2 = curl(CFG["TEST_URL"], timeout=10, via_socks=socks, want_code="204")
@@ -635,7 +656,7 @@ def main():
     LOG("[ERR] туннель после применения не работает (http=%s) — откат" % code2)
     if os.path.exists(backup):
         shutil_copy(backup, CFG["XRAY_CONF"])
-        subprocess.run(["systemctl", "restart", CFG["SYSTEMD_UNIT"]], capture_output=True, timeout=60)
+        restart_xray()
         time.sleep(1.5)
         ok3, code3, _ = curl(CFG["TEST_URL"], timeout=10, via_socks=socks, want_code="204")
         LOG("[i] после отката: http=%s" % code3)

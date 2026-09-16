@@ -10,6 +10,24 @@
                 "tag": "dns-ru",
                 "server": "77.88.8.8",
                 "detour": "direct"
+            },
+            {
+                "type": "https",
+                "tag": "dns-proxy",
+                "server": "1.1.1.1",
+                "detour": "proxy"
+            }
+        ],
+        "rules": [
+            {
+                "rule_set": ["geosite-ru-blocked"],
+                "action": "route",
+                "server": "dns-proxy"
+            },
+            {
+                "domain_suffix": ["youtube.com", "rutracker.org"],
+                "action": "route",
+                "server": "dns-proxy"
             }
         ],
         "final": "dns-ru"
@@ -34,7 +52,7 @@
                 "strategy": "prefer_ipv4"
             },
             "server": "127.0.0.1",
-            "server_port": 10808,
+            "server_port": 20808,
             "tag": "proxy",
             "type": "socks",
             "udp_fragment": true
@@ -57,8 +75,6 @@
                 "process_name": [
                     "xray",
                     "sing-box",
-                    "happd",
-                    "Happ",
                     "vpn-autoselect"
                 ]
             },
