@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""vpn-urls — пользовательские домены поверх автоматического списка ru-blocked.
+
+  sudo vpn-urls add openai.com claude.ai     # через VPN (домен и все поддомены)
+  sudo vpn-urls add direct:example.com       # наоборот: всегда напрямую
+  sudo vpn-urls remove openai.com
+  vpn-urls list
+
+Списки хранятся в $SYSCONFDIR/domains.proxy и domains.direct; после правки
+конфиг sing-box пересобирается и TUN-служба перезапускается (--no-restart — без).
+"""
+
+import argparse
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
+import vpnsplit  # noqa: E402
+
+
+def show_list(cfg):
+    proxy = vpnsplit.read_domains("proxy")
+    direct = vpnsplit.read_domains("direct")
+    fixed = vpnsplit.split_list(cfg["DIRECT_DOMAINS"])
+    print("через VPN (пользовательские):", ", ".join(proxy) if proxy else "—")
+    print("всегда напрямую (пользовательские):", ", ".join(direct) if direct else "—")
+    if fixed:
+        print("всегда напрямую (DIRECT_DOMAINS в %s):" % vpnsplit.conf_path(), ", ".join(fixed))
+    print("автоматически через VPN: все домены и подсети ru-blocked (runetfreedom)")
+
+
+def edit(action, items):
+    lists = {k: vpnsplit.read_domains(k) for k in ("proxy", "direct")}
+    for it in items:
+        kind = "proxy"
+        if it.strip().lower().startswith("direct:"):
+            kind, it = "direct", it.strip()[7:]
+        dom = vpnsplit.normalize_domain(it)
+        if not dom:
+            continue
+        lst = lists[kind]
+        if action == "add":
+            if dom not in lst:
+                lst.append(dom)
+            other = lists["direct" if kind == "proxy" else "proxy"]
+            if dom in other:  # домен не может быть в обоих списках
+                other.remove(dom)
+        elif dom in lst:
+            lst.remove(dom)
+        else:
+            print("нет в списке: %s" % dom, file=sys.stderr)
+    return lists
+
+
+def main():
+    ap = argparse.ArgumentParser(prog="vpn-urls", description=__doc__.split("\n")[0],
+                                 formatter_class=argparse.RawDescriptionHelpFormatter,
+                                 epilog="\n".join(__doc__.split("\n")[1:]))
+    ap.add_argument("action", choices=("add", "remove", "list"))
+    ap.add_argument("items", nargs="*")
+    ap.add_argument("--no-restart", action="store_true", help="не перезапускать TUN-службу")
+    args = ap.parse_args()
+
+    cfg = vpnsplit.load_settings()
+    if args.action == "list":
+        show_list(cfg)
+        return 0
+    if not args.items:
+        ap.error("укажите хотя бы один домен")
+    if not os.access(vpnsplit.LAYOUT["SYSCONFDIR"], os.W_OK):
+        print("нет прав на %s — запустите через sudo" % vpnsplit.LAYOUT["SYSCONFDIR"],
+              file=sys.stderr)
+        return 1
+
+    old = {k: vpnsplit.read_domains(k) for k in ("proxy", "direct")}
+    lists = edit(args.action, args.items)
+    # сначала собираем и проверяем конфиг, только потом сохраняем списки
+    try:
+        conf = vpnsplit.render_singbox(cfg, extra_proxy=lists["proxy"],
+                                       extra_direct=lists["direct"])
+        vpnsplit.write_singbox(cfg, conf)
+    except (RuntimeError, OSError) as e:
+        print("КОНФИГ НЕ СОБРАЛСЯ, списки не изменены: %s" % e, file=sys.stderr)
+        return 1
+    for k in ("proxy", "direct"):
+        if lists[k] != old[k]:
+            vpnsplit.write_domains(k, lists[k])
+
+    if not args.no_restart:
+        r = vpnsplit.restart_service("tun")
+        if r.returncode != 0:
+            print("не удалось перезапустить %s: %s" % (vpnsplit.service_id("tun"),
+                                                       (r.stderr or r.stdout).strip()),
+                  file=sys.stderr)
+            return 1
+        print("готово: %s перезапущен" % vpnsplit.service_id("tun"))
+    show_list(cfg)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

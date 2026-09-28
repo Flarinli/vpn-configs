@@ -2,11 +2,13 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <!-- vpn-split: обновление подписки и узлов xray каждые 10 минут -->
     <key>Label</key>
-    <string>local.vpn-autoselect</string>
+    <string>@LABEL_PREFIX@.autoselect</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/vpn-autoselect</string>
+        <string>@PYTHON@</string>
+        <string>@PREFIX@/libexec/vpn-autoselect</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -14,5 +16,9 @@
     <integer>600</integer>
     <key>LowPriorityIO</key>
     <true/>
+    <key>StandardOutPath</key>
+    <string>@LOGDIR@/autoselect.log</string>
+    <key>StandardErrorPath</key>
+    <string>@LOGDIR@/autoselect.log</string>
 </dict>
 </plist>

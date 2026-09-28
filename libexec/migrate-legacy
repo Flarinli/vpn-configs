@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+migrate-legacy — переносит настройки старой (до vpn-split) установки в новую раскладку.
+
+  migrate-legacy [--singbox OLD_CONFIG_JSON] [--autoselect OLD_CONF] [--dry-run]
+
+Из старого конфига sing-box (…/singbox-tun/config.json):
+  * пользовательские домены через VPN (правило proxy с domain_suffix без rule_set) -> domains.proxy
+  * домены «всегда напрямую» (правило direct с domain_suffix)                       -> domains.direct
+  * адрес прямого DNS (udp-сервер с detour=direct)                                   -> DNS_DIRECT
+Из старого vpn-autoselect.conf: подписка, фильтры, таймауты, порты, DIRECT_DOMAINS.
+Существующие домены не теряются — списки объединяются.
+"""
+
+import argparse
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
+import vpnsplit  # noqa: E402
+
+AUTOSELECT_KEYS = ("SUB_URL", "NODES_FILE", "SUB_TTL", "EXCLUDE_NAMES", "INCLUDE_NAMES",
+                   "TEST_URL", "PROBE_URL", "PING_SAMPLES", "PING_TIMEOUT", "PING_TOP",
+                   "DIRECT_IFACE", "IN_SOCKS_PORT", "IN_HTTP_PORT", "DIRECT_DOMAINS")
+
+
+def from_singbox(path):
+    d = json.load(open(path, encoding="utf-8"))
+    proxy, direct, values = [], [], {}
+    for r in d.get("route", {}).get("rules", []):
+        if "domain_suffix" not in r or "rule_set" in r:
+            continue
+        if r.get("outbound") == "proxy":
+            proxy += r["domain_suffix"]
+        elif r.get("outbound") == "direct":
+            direct += r["domain_suffix"]
+    for s in d.get("dns", {}).get("servers", []):
+        if s.get("type") == "udp" and s.get("detour") == "direct" and s.get("server"):
+            values["DNS_DIRECT"] = s["server"]
+            break
+    return proxy, direct, values
+
+
+def from_autoselect(path):
+    old = vpnsplit.parse_kv(path)
+    values = {}
+    for k in AUTOSELECT_KEYS:
+        if k in old:
+            values[vpnsplit.LEGACY_KEYS.get(k, k)] = old[k]
+    if "DIRECT_DOMAINS" in values:  # xray-формат "domain:x" -> простой суффикс
+        values["DIRECT_DOMAINS"] = ",".join(
+            x.split(":", 1)[1] if x.startswith("domain:") else x
+            for x in vpnsplit.split_list(values["DIRECT_DOMAINS"]))
+    return values
+
+
+def merge(kind, items, dry):
+    cur = vpnsplit.read_domains(kind)
+    new = cur + [x for x in (vpnsplit.normalize_domain(i) for i in items) if x and x not in cur]
+    if new != cur:
+        print("  domains.%s: + %s" % (kind, ", ".join(new[len(cur):])))
+        if not dry:
+            vpnsplit.write_domains(kind, new)
+
+
+def main():
+    ap = argparse.ArgumentParser(description="migrate legacy singbox-tun/vpn-autoselect settings")
+    ap.add_argument("--singbox")
+    ap.add_argument("--autoselect")
+    ap.add_argument("--dry-run", action="store_true")
+    args = ap.parse_args()
+
+    values, proxy, direct = {}, [], []
+    if args.autoselect and os.path.exists(args.autoselect):
+        values.update(from_autoselect(args.autoselect))
+    if args.singbox and os.path.exists(args.singbox):
+        proxy, direct, v = from_singbox(args.singbox)
+        values.update(v)
+    # домены, уже заданные в DIRECT_DOMAINS, в domains.direct не дублируем
+    fixed = set(vpnsplit.split_list(values.get("DIRECT_DOMAINS", "")))
+    direct = [x for x in direct if x not in fixed]
+
+    shown = {k: ("***" if k == "SUB_URL" and v else v) for k, v in values.items()}
+    print("  настройки: %s" % (", ".join("%s=%s" % kv for kv in shown.items()) or "—"))
+    merge("proxy", proxy, args.dry_run)
+    merge("direct", direct, args.dry_run)
+    if values and not args.dry_run:
+        vpnsplit.set_conf_values(vpnsplit.conf_path(), values)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

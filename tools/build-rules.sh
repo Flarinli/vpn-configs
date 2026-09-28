@@ -1,22 +1,23 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Пересобирает rule-set'ы sing-box (geosite-ru-blocked.srs, geoip-ru-blocked.srs)
-# из свежих списков блокировок runetfreedom и раскладывает их в macos/rules и linux/rules.
+# из свежих списков блокировок runetfreedom в share/rules (общие для Linux и macOS).
 #
 # Источник: https://github.com/runetfreedom/russia-blocked-geosite (ru-blocked-all.txt)
 #           https://github.com/runetfreedom/russia-blocked-geoip   (geoip.dat, v2ray-формат)
 #
 # Нужен sing-box (для `sing-box rule-set compile`) и python3. Запуск без sudo.
-#   bash build-rules.sh
+# sing-box ищется в $SINGBOX, в PATH, затем в установленном vpn-split ($PREFIX/bin).
+#   tools/build-rules.sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-SINGBOX=$(command -v sing-box || true)
-if [[ -z "$SINGBOX" && -x /Applications/Happ.app/Contents/MacOS/tun/sing-box ]]; then
-  SINGBOX=/Applications/Happ.app/Contents/MacOS/tun/sing-box
+SINGBOX="${SINGBOX:-$(command -v sing-box || true)}"
+if [[ -z "$SINGBOX" && -x "${PREFIX:-/opt/vpn-split}/bin/sing-box" ]]; then
+  SINGBOX="${PREFIX:-/opt/vpn-split}/bin/sing-box"
 fi
-[[ -n "$SINGBOX" ]] || { echo "нужен sing-box в PATH (или Happ.app на macOS)" >&2; exit 1; }
+[[ -n "$SINGBOX" ]] || { echo "нужен sing-box: в PATH, \$SINGBOX или установленный vpn-split" >&2; exit 1; }
 echo "sing-box: $SINGBOX ($($SINGBOX version | head -1))"
 
 echo "== 1/4: скачивание списков ru-blocked-all (домены) и geoip.dat (подсети) =="
@@ -105,12 +106,9 @@ print("IPv4 подсетей:", len(cidr_list))
 json.dump({"version": 3, "rules": [{"ip_cidr": cidr_list}]}, open(dst, "w"))
 PY
 
-echo "== 4/4: компиляция в .srs и раскладка по macos/linux =="
-"$SINGBOX" rule-set compile "$WORK/rules-geosite.json" -o "$WORK/geosite-ru-blocked.srs"
-"$SINGBOX" rule-set compile "$WORK/rules-geoip.json" -o "$WORK/geoip-ru-blocked.srs"
-for d in "$ROOT/macos/rules" "$ROOT/linux/rules"; do
-  mkdir -p "$d"
-  cp "$WORK/geosite-ru-blocked.srs" "$WORK/geoip-ru-blocked.srs" "$d/"
-done
-ls -la "$ROOT/macos/rules" "$ROOT/linux/rules"
-echo "готово — не забудьте переустановить (install.sh) и перезапустить демон на каждой машине."
+echo "== 4/4: компиляция в .srs -> share/rules =="
+mkdir -p "$ROOT/share/rules"
+"$SINGBOX" rule-set compile "$WORK/rules-geosite.json" -o "$ROOT/share/rules/geosite-ru-blocked.srs"
+"$SINGBOX" rule-set compile "$WORK/rules-geoip.json" -o "$ROOT/share/rules/geoip-ru-blocked.srs"
+ls -la "$ROOT/share/rules"
+echo "готово — обновите установку на каждой машине: sudo ./install.sh"

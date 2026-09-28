@@ -1,0 +1,3 @@
+# vpn-split: ротация логов launchd-служб (man newsyslog.conf)
+# logfilename            mode count size(KB) when flags
+@LOGDIR@/*.log           640  5     1024     *    GN
