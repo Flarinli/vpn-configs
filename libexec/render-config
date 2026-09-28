@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+render-config — собирает конфиг sing-box ($STATEDIR/singbox.json) из шаблона
+share/singbox.json.tmpl, настроек vpn-split.conf и списков domains.proxy/domains.direct.
+
+  render-config                  # собрать, проверить (sing-box check), записать атомарно
+  render-config --stdout         # только вывести результат
+  render-config --exec           # собрать и exec sing-box run (для launchd)
+  render-config --os darwin      # собрать под другую ОС (для проверки)
+
+Linux: вызывается из ExecStartPre юнита tun — интерфейс по умолчанию определяется
+на момент запуска, поэтому после смены сети достаточно перезапустить службу.
+"""
+
+import argparse
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
+import vpnsplit  # noqa: E402
+
+
+def main():
+    ap = argparse.ArgumentParser(description="render sing-box config for vpn-split")
+    ap.add_argument("--conf", default=None, help="путь к vpn-split.conf")
+    ap.add_argument("--os", choices=("linux", "darwin"), default=vpnsplit.OS_NAME)
+    ap.add_argument("--iface", default=None, help="интерфейс вместо автоопределения")
+    ap.add_argument("--stdout", action="store_true", help="вывести конфиг, ничего не записывая")
+    ap.add_argument("--no-check", action="store_true", help="не запускать sing-box check")
+    ap.add_argument("--exec", action="store_true", help="после записи exec sing-box run")
+    args = ap.parse_args()
+
+    cfg = vpnsplit.load_settings(args.conf)
+    conf = vpnsplit.render_singbox(cfg, os_name=args.os, iface=args.iface)
+    if args.stdout:
+        json.dump(conf, sys.stdout, indent=4, ensure_ascii=False)
+        print()
+        return 0
+    try:
+        path = vpnsplit.write_singbox(cfg, conf, check=not args.no_check)
+    except (RuntimeError, OSError) as e:
+        print("render-config: %s" % e, file=sys.stderr)
+        return 1
+    if args.exec:
+        sys.stdout.flush()
+        os.execv(cfg["SINGBOX_BIN"], [cfg["SINGBOX_BIN"], "run", "-c", path])
+    print("render-config: %s" % path)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

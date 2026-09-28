@@ -1,0 +1,3 @@
+#!/bin/sh
+# vpn-split: обёртка для PATH, сгенерирована install.sh — не редактировать.
+exec "@PYTHON@" "@TARGET@" "$@"

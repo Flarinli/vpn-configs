@@ -9,16 +9,18 @@ vpn-autoselect — автоматический выбор самого быст
   3. Генерирует конфиг xray: входы 127.0.0.1:20808 (SOCKS) / 20809 (HTTP) не меняются,
      все живые узлы — как outbounds, балансировщик strategy=leastPing + BurstObservatory:
      xray сам непрерывно меряет реальную задержку через узлы и переключается на лучший.
-  4. Валидирует конфиг (xray -test), атомарно подменяет /usr/local/etc/xray/config.json,
-     перезапускает xray и проверяет туннель. При неудаче — откат на предыдущий конфиг.
+  4. Валидирует конфиг (xray -test), атомарно подменяет $STATEDIR/xray.json,
+     перезапускает службу xray и проверяет туннель. При неудаче — откат на предыдущий конфиг.
 
 Безопасность сети:
   - Никаких TUN/маршрутов/системного прокси — сервис только локальные входы xray.
-  - Правила LAN сохраняются: geoip:private и domain:gosniias.lan -> direct-out.
+  - Правила LAN сохраняются: geoip:private и DIRECT_DOMAINS -> direct-out.
   - Прямые запросы (подписка, пинг) биндятся на физический интерфейс, чтобы
-    работать даже когда поднят Happ TUN.
+    работать даже когда поднят TUN.
 
-Конфиг: /etc/vpn-autoselect.conf (KEY=VALUE).
+Конфиг: $SYSCONFDIR/vpn-split.conf (KEY=VALUE, общий для всех компонентов vpn-split;
+путь переопределяется --conf или VPN_SPLIT_CONF). Пути к xray/состоянию берутся
+из раскладки установки (см. lib/vpnsplit.py).
 """
 
 import argparse
@@ -30,6 +32,7 @@ import ipaddress
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -38,55 +41,14 @@ import time
 import urllib.parse
 import urllib.request
 
-# ---------------------------------------------------------------- defaults ---
+# ---------------------------------------------------------------- settings ---
 
-IS_MAC = sys.platform == "darwin"
-CONF_PATH = "/usr/local/etc/vpn-autoselect.conf" if IS_MAC else "/etc/vpn-autoselect.conf"
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
+import vpnsplit  # noqa: E402
 
-DEF = {
-    "SUB_URL": "",
-    "NODES_FILE": "",              # альтернатива подписке: локальный файл с URI узлов
-    "XRAY_BIN": "/usr/local/bin/xray",
-    "XRAY_CONF": "/usr/local/etc/xray/config.json",
-    "SYSTEMD_UNIT": "xray.service",
-    "STATUS_DIR": "/usr/local/var/vpn-autoselect" if IS_MAC else "/var/lib/vpn-autoselect",
-    "LAUNCHD_LABEL": "local.xray",  # macOS: label LaunchDaemon для рестарта вместо systemd
-    "TEST_URL": "https://www.youtube.com/generate_204",
-    "PROBE_URL": "https://www.youtube.com/generate_204",  # пробник burstObservatory: нода для leastPing
-                                   # обязана открывать запрещённый ресурс, а не просто быть живой
-    "SUB_TTL": "21600",            # сек: как часто перечитывать подписку при живом туннеле
-    "PING_SAMPLES": "3",
-    "PING_TIMEOUT": "2.0",
-    "PING_TOP": "0",               # сколько лучших узлов класть в конфиг; 0 = все
-    "DIRECT_IFACE": "auto",        # iface для прямых запросов; auto = по умолчному маршруту
-    "EXCLUDE_NAMES": "",           # regex: узлы с совпадающим именем выкидываются (напр. LTE|Россия)
-    "INCLUDE_NAMES": "",           # regex: оставить только совпадающие (если задан)
-    "INCLUDE_HAPP": "auto",        # auto|yes|no: добавить socks://127.0.0.1:10808 (ядро Happ) как кандидата
-    "IN_SOCKS_PORT": "20808",
-    "IN_HTTP_PORT": "20809",
-    "DIRECT_DOMAINS": "domain:gosniias.lan",
-    "CURL_BIN": "/usr/bin/curl",
-}
+IS_MAC = vpnsplit.IS_MAC
 
 LOG = lambda msg: print(msg, flush=True)
-
-
-# ----------------------------------------------------------------- config ---
-
-def load_conf(path):
-    cfg = dict(DEF)
-    if path and os.path.exists(path):
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, v = line.split("=", 1)
-                k = k.strip()
-                v = v.strip().strip('"').strip("'")
-                if k in cfg:
-                    cfg[k] = v
-    return cfg
 
 
 # --------------------------------------------------------- network helpers ---
@@ -121,14 +83,6 @@ def default_iface():
     return None, None
 
 
-def port_open(host, port, timeout=1.0):
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
-
-
 def curl(url, timeout=10, iface_ip=None, via_socks=None, want_code=None):
     """curl с явным управлением прокси/интерфейсом. Возвращает (ok, http_code, elapsed)."""
     cmd = [CFG["CURL_BIN"], "-sS", "-o", "/dev/null",
@@ -153,7 +107,7 @@ def curl(url, timeout=10, iface_ip=None, via_socks=None, want_code=None):
         return False, "000", "?"
 
 
-CFG = dict(DEF)  # заполнится в main()
+CFG = vpnsplit.default_settings()  # заполнится в main()
 
 
 # --------------------------------------------------------- subscription I/O ---
@@ -388,8 +342,8 @@ def tcp_ping(args):
 # ------------------------------------------------------------- xray config ---
 
 def build_config(nodes, iface):
-    socks_port = int(CFG["IN_SOCKS_PORT"])
-    http_port = int(CFG["IN_HTTP_PORT"])
+    socks_port = int(CFG["SOCKS_PORT"])
+    http_port = int(CFG["HTTP_PORT"])
 
     sniff = {"enabled": True, "destOverride": ["http", "tls", "quic"], "routeOnly": True}
     inbounds = [
@@ -406,8 +360,10 @@ def build_config(nodes, iface):
     rules = [
         {"type": "field", "ip": ["geoip:private"], "outboundTag": "direct-out"},
     ]
-    for d in [x for x in CFG["DIRECT_DOMAINS"].split(",") if x.strip()]:
-        rules.append({"type": "field", "domain": [d.strip()], "outboundTag": "direct-out"})
+    for d in vpnsplit.split_list(CFG["DIRECT_DOMAINS"]):
+        # простой домен -> суффиксное правило xray; "domain:"/"full:"/"regexp:" — как есть
+        rules.append({"type": "field", "domain": [d if ":" in d else "domain:" + d],
+                      "outboundTag": "direct-out"})
     rules.append({"type": "field",
                   "inboundTag": ["socks-in", "http-in"],
                   "network": "tcp,udp",
@@ -439,18 +395,14 @@ def build_config(nodes, iface):
 
 
 def restart_xray():
-    """Рестарт xray: systemd на Linux, launchctl на macOS."""
-    if IS_MAC:
-        return subprocess.run(["launchctl", "kickstart", "-k",
-                               "system/" + CFG["LAUNCHD_LABEL"]],
-                              capture_output=True, text=True, timeout=60)
-    return subprocess.run(["systemctl", "restart", CFG["SYSTEMD_UNIT"]],
-                          capture_output=True, text=True, timeout=60)
+    """Рестарт службы xray (systemd на Linux, launchd на macOS)."""
+    return vpnsplit.restart_service("xray")
 
 
 def xray_validate(path):
+    env = dict(os.environ, XRAY_LOCATION_ASSET=CFG["XRAY_ASSET_DIR"])
     r = subprocess.run([CFG["XRAY_BIN"], "run", "-test", "-c", path],
-                       capture_output=True, text=True, timeout=30)
+                       capture_output=True, text=True, timeout=30, env=env)
     return r.returncode == 0, (r.stdout + r.stderr).strip()[:500]
 
 
@@ -459,13 +411,14 @@ def xray_validate(path):
 def main():
     global CFG
     ap = argparse.ArgumentParser(description="auto-select fastest VPN node for system xray")
-    ap.add_argument("--conf", default=CONF_PATH)
+    ap.add_argument("--conf", default=vpnsplit.conf_path())
     ap.add_argument("--dry-run", action="store_true", help="не менять конфиг/xray, только отчёт")
     ap.add_argument("--force", action="store_true", help="игнорировать живой туннель и пересобрать")
     ap.add_argument("--no-restart", action="store_true", help="обновить конфиг без перезапуска xray")
     args = ap.parse_args()
 
-    CFG = load_conf(args.conf)
+    CFG = vpnsplit.load_settings(args.conf)
+    CFG["CURL_BIN"] = CFG["CURL_BIN"] or shutil.which("curl") or "curl"
     if not CFG["SUB_URL"] and not CFG["NODES_FILE"]:
         LOG("[ERR] SUB_URL не задан в %s" % args.conf)
         return 2
@@ -485,7 +438,7 @@ def main():
         iface = CFG["DIRECT_IFACE"]
     LOG("[i] прямой iface: %s (%s)" % (iface or "-", iface_ip or "-"))
 
-    socks = "127.0.0.1:%s" % CFG["IN_SOCKS_PORT"]
+    socks = "127.0.0.1:%s" % CFG["SOCKS_PORT"]
     sub_cache = os.path.join(CFG["STATUS_DIR"], "nodes.txt")
     sub_meta = os.path.join(CFG["STATUS_DIR"], "sub.json")
 
@@ -549,16 +502,6 @@ def main():
         LOG("[i] после фильтра имён (EXCLUDE=%r INCLUDE=%r): %d узлов" % (
             CFG["EXCLUDE_NAMES"], CFG["INCLUDE_NAMES"], len(parsed)))
 
-    # опционально: локальное ядро Happ как кандидат (когда GUI подключён)
-    if CFG["INCLUDE_HAPP"].lower() in ("auto", "yes"):
-        if port_open("127.0.0.1", 10808, 1.0):
-            parsed.append({"name": "Happ (локальное ядро :10808)", "host": "127.0.0.1",
-                           "port": 10808,
-                           "outbound": {"tag": "node-happ", "protocol": "socks",
-                                        "settings": {"servers": [{"address": "127.0.0.1",
-                                                                  "port": 10808}]}}})
-            LOG("[i] Happ-ядро на :10808 живо — добавлено кандидатом")
-
     if not parsed:
         LOG("[ERR] ни один URI не распарсился")
         write_status(healthy, "parse-failed")
@@ -604,7 +547,7 @@ def main():
     fd, tmp = tempfile.mkstemp(dir=conf_dir, prefix=".autoselect.", suffix=".json")
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=1)
-    os.chmod(tmp, 0o644)
+    os.chmod(tmp, 0o600)  # внутри учётные данные узлов
 
     ok, msg = xray_validate(tmp)
     if not ok:
@@ -655,18 +598,13 @@ def main():
     # откат
     LOG("[ERR] туннель после применения не работает (http=%s) — откат" % code2)
     if os.path.exists(backup):
-        shutil_copy(backup, CFG["XRAY_CONF"])
+        shutil.copy2(backup, CFG["XRAY_CONF"])
         restart_xray()
         time.sleep(1.5)
         ok3, code3, _ = curl(CFG["TEST_URL"], timeout=10, via_socks=socks, want_code="204")
         LOG("[i] после отката: http=%s" % code3)
     write_status(False, "rollback", top)
     return 1
-
-
-def shutil_copy(src, dst):
-    import shutil
-    shutil.copy2(src, dst)
 
 
 def write_status(healthy, action, nodes=None):

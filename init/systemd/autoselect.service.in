@@ -1,0 +1,13 @@
+[Unit]
+Description=vpn-split: обновление подписки и узлов xray (vpn-autoselect)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=@PYTHON@ @PREFIX@/libexec/vpn-autoselect
+ProtectSystem=strict
+ReadWritePaths=@STATEDIR@
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true

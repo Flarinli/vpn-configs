@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- vpn-split: xray (SOCKS/HTTP на 127.0.0.1, узлы из подписки) -->
+    <key>Label</key>
+    <string>@LABEL_PREFIX@.xray</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>@PREFIX@/bin/xray</string>
+        <string>run</string>
+        <string>-c</string>
+        <string>@STATEDIR@/xray.json</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>XRAY_LOCATION_ASSET</key>
+        <string>@PREFIX@/share/xray</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+    <key>StandardOutPath</key>
+    <string>@LOGDIR@/xray.log</string>
+    <key>StandardErrorPath</key>
+    <string>@LOGDIR@/xray.log</string>
+</dict>
+</plist>
