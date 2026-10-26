@@ -45,7 +45,9 @@ jobs:
           persist-credentials: false
 
       - name: Bump within lines
-        run: tools/updates.py bump | tee "$RUNNER_TEMP/bumped.txt"
+        run: |
+          set -o pipefail  # иначе tee прячет падение bump
+          tools/updates.py bump | tee "$RUNNER_TEMP/bumped.txt"
 
       - name: Open or update PR
         run: |
