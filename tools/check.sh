@@ -4,7 +4,7 @@
 #   2. тесты tests/ (stdlib unittest, без сети);
 #   3. поэтапная установка в DESTDIR: качает sing-box и xray закреплённых
 #      версий под текущую ОС и сверяет sha256 из versions.env;
-#   4. конфиг sing-box для linux и darwin -> `sing-box check` (вместе с rule-set'ами);
+#   4. конфиг sing-box для текущей ОС -> `sing-box check` (вместе с rule-set'ами);
 #   5. конфиг xray из tests/nodes.txt -> `xray run -test`.
 # Так обновление версий в PR «VPN updates» проверяется на реальных бинарниках.
 #   tools/check.sh
@@ -53,12 +53,13 @@ fi
 export VPN_SPLIT_SYSCONFDIR="$D/etc/vpn-split" VPN_SPLIT_STATEDIR="$D/var/lib/vpn-split"
 export VPN_SPLIT_CONF="$D/etc/vpn-split/vpn-split.conf"
 
-step "sing-box check (linux, darwin)"
-for os in linux darwin; do
-  "$PY" "$P/libexec/render-config" --os "$os" --iface lo --stdout >"$WORK/singbox-$os.json"
-  "$P/bin/sing-box" check -c "$WORK/singbox-$os.json"
-  echo "$os: ok"
-done
+# только под текущую ОС: часть опций (default_mark) sing-box принимает лишь на
+# своей платформе; вторую ОС проверяет соседний job матрицы CI
+case "$(uname -s)" in Darwin) os=darwin ;; *) os=linux ;; esac
+step "sing-box check ($os)"
+"$PY" "$P/libexec/render-config" --os "$os" --iface lo --stdout >"$WORK/singbox.json"
+"$P/bin/sing-box" check -c "$WORK/singbox.json"
+echo "ok"
 
 step "xray run -test (tests/nodes.txt)"
 "$PY" - "$P/libexec/vpn-autoselect" "$ROOT/tests/nodes.txt" "$WORK/xray.json" <<'PY'
