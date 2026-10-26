@@ -1,0 +1,9 @@
+[Unit]
+Description=vpn-split: автообновление из клона репозитория (vpn-split-update)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# без песочницы: install.sh пишет в @PREFIX@, /etc, юниты systemd и перезапускает службы
+ExecStart=@PREFIX@/libexec/vpn-split-update

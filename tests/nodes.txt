@@ -1,0 +1,6 @@
+vless://b831381d-6324-4d53-ad4f-8cda48b30811@reality.example.com:443?type=tcp&security=reality&sni=www.microsoft.com&fp=chrome&pbk=wIxe5S7VRW1oC57q3sv3bcykwT8q_5s6v1Bpd5D-8GI&sid=6ba85179e30d4fc2&flow=xtls-rprx-vision#test-vless-reality
+vless://b831381d-6324-4d53-ad4f-8cda48b30811@xhttp.example.com:443?type=xhttp&security=tls&sni=xhttp.example.com&path=%2Fx&mode=auto#test-vless-xhttp
+trojan://secret@trojan.example.com:443?type=ws&security=tls&sni=trojan.example.com&path=%2Fws&host=trojan.example.com#test-trojan-ws
+vless://b831381d-6324-4d53-ad4f-8cda48b30811@grpc.example.com:443?type=grpc&security=tls&serviceName=grpc&sni=grpc.example.com#test-vless-grpc
+ss://Y2hhY2hhMjAtaWV0Zi1wb2x5MTMwNTpzZWNyZXQ@ss.example.com:8388#test-ss
+vmess://eyJ2IjogIjIiLCAicHMiOiAidGVzdC12bWVzcyIsICJhZGQiOiAidm1lc3MuZXhhbXBsZS5jb20iLCAicG9ydCI6ICI0NDMiLCAiaWQiOiAiYjgzMTM4MWQtNjMyNC00ZDUzLWFkNGYtOGNkYTQ4YjMwODExIiwgImFpZCI6ICIwIiwgIm5ldCI6ICJ3cyIsICJ0eXBlIjogIm5vbmUiLCAiaG9zdCI6ICJ2bWVzcy5leGFtcGxlLmNvbSIsICJwYXRoIjogIi93cyIsICJ0bHMiOiAidGxzIiwgInNuaSI6ICJ2bWVzcy5leGFtcGxlLmNvbSJ9

@@ -1,0 +1,96 @@
+name: VPN updates
+
+# Раз в неделю (tools/updates.py):
+#   1. bump — sing-box и xray в пределах линейки (sing-box 1.12.x, xray 26.x)
+#      с пересчётом sha256 в versions.env, плюс пересборка rule-set'ов
+#      runetfreedom, если им больше 4 недель; открывает или обновляет PR
+#      «VPN updates»;
+#   2. новые линейки (sing-box 1.13, xray 27) — в issue «VPN drift»: там бывают
+#      несовместимые изменения формата конфига, их смотрят вручную.
+# Push и PR от GITHUB_TOKEN не запускают CI, поэтому CI на ветке PR запускается
+# явно через workflow_dispatch. Нужна настройка репозитория: Settings → Actions →
+# General → «Allow GitHub Actions to create and approve pull requests».
+# PR мержится сам, когда CI зелёный (auto-merge). Для этого в Settings → General
+# включён «Allow auto-merge», а у main есть ruleset с обязательными проверками
+# CI. Без них GitHub не включает auto-merge, и PR ждёт ручного merge.
+# После merge машины подтягивают main и переустанавливаются сами (vpn-split-update).
+on:
+  schedule:
+    - cron: "23 6 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  updates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write       # ветка updates/weekly
+      pull-requests: write  # PR «VPN updates»
+      issues: write         # issue «VPN drift»
+      actions: write        # запуск CI на ветке PR
+    env:
+      BRANCH: updates/weekly
+      BASE: ${{ github.event.repository.default_branch }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Bump within lines
+        run: tools/updates.py bump | tee "$RUNNER_TEMP/bumped.txt"
+
+      - name: Open or update PR
+        run: |
+          set -euo pipefail
+          if [ -z "$(git status --porcelain)" ]; then echo "нет обновлений"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+          git add -A
+          git commit -q -m "Bump pinned versions" -m "$(grep '^bump ' "$RUNNER_TEMP/bumped.txt")"
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)
+          # ветка принадлежит этому workflow и пересоздаётся каждую неделю
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            push --force origin "HEAD:refs/heads/$BRANCH"
+          {
+            echo "Автоматическое обновление от $(date -u +%F) (\`tools/updates.py bump\`)."
+            echo; echo '```'; grep '^bump ' "$RUNNER_TEMP/bumped.txt"; echo '```'
+            echo; echo "Мержится автоматически, когда обязательные проверки CI зелёные; после merge машины с таймером vpn-split-update переустанавливаются в течение часа. Новые линейки sing-box/xray сюда не попадают: они в issue «VPN drift»."
+          } >"$RUNNER_TEMP/pr.md"
+          if gh pr view "$BRANCH" --json state --jq .state 2>/dev/null | grep -qx OPEN; then
+            gh pr edit "$BRANCH" --body-file "$RUNNER_TEMP/pr.md"
+          else
+            gh pr create --base "$BASE" --head "$BRANCH" --title "VPN updates" --body-file "$RUNNER_TEMP/pr.md"
+          fi
+          gh workflow run ci.yml --ref "$BRANCH"
+          # GraphQL, а не `gh pr merge --auto`: без обязательных проверок мутация
+          # падает, а не мержит сразу, до CI
+          gh api graphql -f id="$(gh pr view "$BRANCH" --json id --jq .id)" -f query='
+            mutation($id: ID!) { enablePullRequestAutoMerge(input: {pullRequestId: $id, mergeMethod: MERGE}) { clientMutationId } }' \
+            >/dev/null || echo "::warning::auto-merge не включён: нужны «Allow auto-merge» и обязательные проверки CI у main"
+
+      - name: Report what needs manual review
+        run: |
+          set -uo pipefail
+          report=$(tools/updates.py outdated --markdown 2>&1 || true)  # код 1 = есть обновления, это не ошибка
+          title="VPN drift"
+          number=$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')
+          if grep -q '^| [a-z]' <<<"$report"; then
+            {
+              echo "Автоматическая проверка от $(date -u +%F). Обновления внутри линеек уходят в PR «VPN updates»; здесь новые линейки, их нужно оценить вручную (changelog, формат конфига)."
+              echo; echo "$report"
+              echo; echo "Перейти: \`tools/updates.py bump --major NAME\`, затем \`tools/check.sh\`."
+            } >"$RUNNER_TEMP/issue.md"
+            if [ -n "$number" ]; then gh issue edit "$number" --body-file "$RUNNER_TEMP/issue.md"
+            else gh issue create --title "$title" --body-file "$RUNNER_TEMP/issue.md"; fi
+          elif [ -n "$number" ]; then
+            gh issue close "$number" --comment "Новых линеек не осталось."
+          fi

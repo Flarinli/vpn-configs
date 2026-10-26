@@ -20,11 +20,22 @@ fi
 [[ -n "$SINGBOX" ]] || { echo "нужен sing-box: в PATH, \$SINGBOX или установленный vpn-split" >&2; exit 1; }
 echo "sing-box: $SINGBOX ($($SINGBOX version | head -1))"
 
+# тег последнего релиза — из редиректа releases/latest (без GitHub API и его лимитов)
+latest_tag() {
+  local url
+  url=$(curl -fsSIL -o /dev/null -w '%{url_effective}' "https://github.com/$1/releases/latest")
+  [[ $url == */releases/tag/* ]] || { echo "не удалось узнать последний релиз $1" >&2; exit 1; }
+  echo "${url##*/}"
+}
+
 echo "== 1/4: скачивание списков ru-blocked-all (домены) и geoip.dat (подсети) =="
-curl -sL --max-time 300 -o "$WORK/ru-blocked-all.txt" \
-  'https://github.com/runetfreedom/russia-blocked-geosite/releases/latest/download/ru-blocked-all.txt'
-curl -sL --max-time 300 -o "$WORK/geoip.dat" \
-  'https://github.com/runetfreedom/russia-blocked-geoip/releases/latest/download/geoip.dat'
+GEOSITE_TAG=$(latest_tag runetfreedom/russia-blocked-geosite)
+GEOIP_TAG=$(latest_tag runetfreedom/russia-blocked-geoip)
+echo "geosite $GEOSITE_TAG, geoip $GEOIP_TAG"
+curl -fsSL --retry 3 --max-time 300 -o "$WORK/ru-blocked-all.txt" \
+  "https://github.com/runetfreedom/russia-blocked-geosite/releases/download/$GEOSITE_TAG/ru-blocked-all.txt"
+curl -fsSL --retry 3 --max-time 300 -o "$WORK/geoip.dat" \
+  "https://github.com/runetfreedom/russia-blocked-geoip/releases/download/$GEOIP_TAG/geoip.dat"
 wc -l "$WORK/ru-blocked-all.txt"
 ls -la "$WORK/geoip.dat"
 
@@ -110,5 +121,12 @@ echo "== 4/4: компиляция в .srs -> share/rules =="
 mkdir -p "$ROOT/share/rules"
 "$SINGBOX" rule-set compile "$WORK/rules-geosite.json" -o "$ROOT/share/rules/geosite-ru-blocked.srs"
 "$SINGBOX" rule-set compile "$WORK/rules-geoip.json" -o "$ROOT/share/rules/geoip-ru-blocked.srs"
+# из каких релизов собрано — по этому файлу tools/updates.py решает, пора ли пересобирать
+cat > "$ROOT/share/rules/SOURCES.env" <<EOF
+# Сгенерировано tools/build-rules.sh — не править вручную.
+BUILT=$(date -u +%F)
+GEOSITE_TAG=$GEOSITE_TAG
+GEOIP_TAG=$GEOIP_TAG
+EOF
 ls -la "$ROOT/share/rules"
 echo "готово — обновите установку на каждой машине: sudo ./install.sh"
