@@ -610,7 +610,7 @@ LoadCredential=xray.json:$STATEDIR/xray.json"
     render_template "$REPO/init/launchd/newsyslog.conf.in" "$D$NEWSYSLOG_DIR/$UNIT_PREFIX.conf" 644
     if auto_update; then
       render_template "$REPO/init/launchd/update.plist.in" "$D$LAUNCHD_DIR/$LABEL_PREFIX.update.plist" 644
-      [[ $EUID -eq 0 ]] && chown root:wheel "$D$LAUNCHD_DIR/$LABEL_PREFIX.update.plist"
+      if [[ $EUID -eq 0 ]]; then chown root:wheel "$D$LAUNCHD_DIR/$LABEL_PREFIX.update.plist"; fi
     elif [[ -f $D$LAUNCHD_DIR/$LABEL_PREFIX.update.plist ]]; then
       [[ $NO_START -eq 0 ]] && launchctl bootout "system/$LABEL_PREFIX.update" 2>/dev/null || true
       rm -f "$D$LAUNCHD_DIR/$LABEL_PREFIX.update.plist"
