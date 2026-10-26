@@ -22,7 +22,7 @@ shells="install.sh lib/download.sh libexec/vpn-split-update tools/build-rules.sh
 for f in $shells; do bash -n "$f"; done
 if command -v shellcheck >/dev/null 2>&1; then
   # shellcheck disable=SC2086
-  shellcheck -x $shells
+  shellcheck -x -S warning $shells  # info/style отличаются между версиями shellcheck
 else
   echo "shellcheck не найден — пропускаю"
 fi
@@ -102,7 +102,7 @@ mkdir -p "$U/prefix/libexec" "$U/prefix/share"
 cp libexec/vpn-split-update "$U/prefix/libexec/"
 echo "SRC_DIR=$U/clone" >"$U/prefix/share/layout.env"
 upd() { TMPDIR="$U" "$U/prefix/libexec/vpn-split-update"; }
-installs() { cat "$U/installs" 2>/dev/null | wc -l | tr -d ' '; }
+installs() { wc -l <"$U/installs" 2>/dev/null | tr -d ' ' || echo 0; }
 upd >/dev/null; [[ $(installs) == 1 ]] || { echo "первый запуск должен установить"; exit 1; }
 upd >/dev/null; [[ $(installs) == 1 ]] || { echo "без нового коммита переустановки быть не должно"; exit 1; }
 # новый коммит в origin из другого клона
