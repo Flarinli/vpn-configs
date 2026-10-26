@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- vpn-split: ежечасная проверка обновлений в клоне репозитория (vpn-split-update) -->
+    <key>Label</key>
+    <string>@LABEL_PREFIX@.update</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>@PREFIX@/libexec/vpn-split-update</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>StartInterval</key>
+    <integer>3600</integer>
+    <key>LowPriorityIO</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>@LOGDIR@/update.log</string>
+    <key>StandardErrorPath</key>
+    <string>@LOGDIR@/update.log</string>
+</dict>
+</plist>

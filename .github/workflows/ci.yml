@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      # синтаксис, тесты, поэтапная установка с бинарниками из versions.env,
+      # sing-box check и xray -test на сгенерированных конфигах, vpn-split-update
+      - run: tools/check.sh
+
+  versions:
+    name: versions (sha256 all platforms)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      # все 8 архивов {sing-box,xray}×{linux,darwin}×{amd64,arm64}, не только раннеры CI
+      - run: tools/update-versions.sh --check

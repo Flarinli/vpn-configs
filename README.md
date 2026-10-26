@@ -31,6 +31,7 @@ sudo VPN_SPLIT_SUB_URL='https://…/sub/…' ./install.sh
 Без `VPN_SPLIT_SUB_URL` установщик спросит URL интерактивно (или впишите его
 потом в `/etc/vpn-split/vpn-split.conf` и повторите `sudo ./install.sh`).
 Повторный запуск безопасен: он обновляет файлы, бинарники и юниты, но не трогает настройки и списки.
+Дальше установка обновляется сама из этого клона (см. [Обновления](#обновления)).
 
 `install.sh` делает следующее:
 
@@ -73,8 +74,8 @@ sudo VPN_SPLIT_SUB_URL='https://…/sub/…' ./install.sh
 | Сгенерированные конфиги, статус | `/var/lib/vpn-split/{singbox.json,xray.json,status.json}` |
 | Логи | Linux: journald; macOS: `/var/log/vpn-split/*.log` (ротация newsyslog) |
 | Команды | `/usr/local/bin/vpn-urls`, `/usr/local/sbin/vpn-autoselect` (macOS: `/usr/local/bin`) |
-| Службы Linux | `vpn-split-tun.service`, `vpn-split-xray.service`, `vpn-split-autoselect.timer` |
-| Службы macOS | `io.github.flarinli.vpn-split.{tun,xray,autoselect}` в `/Library/LaunchDaemons` |
+| Службы Linux | `vpn-split-tun.service`, `vpn-split-xray.service`, `vpn-split-autoselect.timer`, `vpn-split-update.timer` |
+| Службы macOS | `io.github.flarinli.vpn-split.{tun,xray,autoselect,update}` в `/Library/LaunchDaemons` |
 
 Симлинков нет: команды в PATH — это маленькие обёртки. Путь установки скрипты
 определяют по своему расположению и `share/layout.env`, который пишет установщик.
@@ -116,6 +117,42 @@ cat /var/lib/vpn-split/status.json                        # текущая но�
 - Linux: `journalctl -u vpn-split-tun -u vpn-split-xray -u vpn-split-autoselect -f`
 - macOS: `tail -f /var/log/vpn-split/*.log`
 
+## Обновления
+
+Обновления приходят сами, в два шага:
+
+1. **GitHub.** Workflow [«VPN updates»](.github/workflows/updates.yml) раз в
+   неделю запускает `tools/updates.py bump`: sing-box и xray внутри своей
+   линейки (sing-box `1.12.x`, xray `26.x`, только релизы старше 7 дней) с
+   пересчётом sha256 в `versions.env`, плюс пересборка rule-set'ов, если им
+   больше 4 недель и у runetfreedom вышел новый релиз. Получается PR
+   «VPN updates», он мержится сам, когда CI зелёный. CI ставит закреплённые
+   бинарники на Ubuntu и macOS и проверяет сгенерированные конфиги
+   (`sing-box check`, `xray run -test`). Новые линейки (sing-box 1.13, xray 27)
+   в PR не попадают: они ломают формат конфига и уходят в issue «VPN drift»
+   для ручной оценки.
+2. **Машины.** Если `install.sh` запускали из git-клона, ставится таймер
+   `vpn-split-update` (раз в час, от root). Он подтягивает `main` клона до
+   `origin/main` (только fast-forward, от имени владельца клона) и, если коммит
+   изменился, повторяет `install.sh --no-deps -y`. Клон не трогается, если
+   выгружена другая ветка или есть незакоммиченные изменения.
+
+Для fetch нужен доступ к приватному репозиторию без интерактивных запросов:
+ключ SSH без пароля или credential helper с токеном. На macOS ssh-agent и
+Keychain пользователя из LaunchDaemon недоступны; тогда клон может подтягивать
+`git-sync-main` из [Flarinli/configs](https://github.com/Flarinli/configs)
+(добавьте путь клона в `configs_repo_sync_repos`), а `vpn-split-update` только
+переустановит то, что уже в клоне.
+
+```bash
+sudo /opt/vpn-split/libexec/vpn-split-update --dry-run   # что сделал бы сейчас
+journalctl -u vpn-split-update                            # Linux
+tail /var/log/vpn-split/update.log                        # macOS
+```
+
+Выключить автообновление: `AUTO_UPDATE=0` в `/etc/vpn-split/vpn-split.conf`,
+затем `sudo ./install.sh`.
+
 ## Удаление
 
 ```bash
@@ -125,11 +162,18 @@ sudo ./install.sh uninstall --purge  # удалить всё
 
 ## Для разработки
 
+- [`tools/check.sh`](tools/check.sh) — то же, что CI: shellcheck, тесты,
+  поэтапная установка в `DESTDIR`, `sing-box check` и `xray run -test`,
+  проверка `vpn-split-update`. Запускается без sudo.
+- [`tools/updates.py`](tools/updates.py) `outdated` — что устарело;
+  `bump [--major] [sing-box|xray|rules]` — обновить (это делает и еженедельный
+  workflow).
 - [`tools/build-rules.sh`](tools/build-rules.sh) пересобирает `share/rules/*.srs`
-  из свежих списков runetfreedom. Обновлять рекомендуется раз в 1–2 месяца,
-  затем выполнить `sudo ./install.sh` на каждой машине.
+  из последних релизов runetfreedom и записывает их теги в
+  `share/rules/SOURCES.env`.
 - [`tools/update-versions.sh`](tools/update-versions.sh) `[sing-box] [xray]`
-  меняет закреплённые версии и пересчитывает sha256 в `versions.env`.
+  меняет закреплённые версии и пересчитывает sha256 в `versions.env`;
+  `--check` только сверяет суммы.
 
 ## Известные нюансы
 

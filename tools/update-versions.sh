@@ -5,9 +5,12 @@
 #
 #   tools/update-versions.sh                       # пересчитать суммы для текущих версий
 #   tools/update-versions.sh 1.12.25 26.9.9        # сменить версии (sing-box, xray)
+#   tools/update-versions.sh --check               # только сверить суммы (CI), код 1 при расхождении
 # shellcheck source-path=SCRIPTDIR/..
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CHECK=0
+if [[ ${1:-} == --check ]]; then CHECK=1; shift; fi
 . "$ROOT/versions.env"
 SINGBOX_VERSION="${1:-$SINGBOX_VERSION}"
 XRAY_VERSION="${2:-$XRAY_VERSION}"
@@ -40,5 +43,10 @@ sha256_of() {
     done
   done
 } > "$WORK/versions.env"
+if [[ $CHECK -eq 1 ]]; then
+  diff -u "$ROOT/versions.env" "$WORK/versions.env" || { echo "versions.env не совпадает с релизами" >&2; exit 1; }
+  echo "versions.env: все sha256 совпадают"
+  exit 0
+fi
 mv "$WORK/versions.env" "$ROOT/versions.env"
 cat "$ROOT/versions.env"

@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# vpn-split-update — автообновление установки из клона репозитория vpn-configs.
+# Запускается от root таймером vpn-split-update (systemd) или LaunchDaemon
+# <LABEL_PREFIX>.update (launchd), раз в час.
+#
+#   1. Подтягивает main клона до origin/main, только fast-forward, от имени
+#      владельца клона (его ключи SSH / credential helper). Как git-sync-main в
+#      Flarinli/configs: не трогает клон, если выгружена не main или есть
+#      изменения отслеживаемых файлов. Неудачный fetch не мешает шагу 2: клон
+#      может подтягивать и git-sync-main из пользовательской сессии.
+#   2. Если коммит клона отличается от установленного ($PREFIX/share/source-rev),
+#      запускает `install.sh --no-deps -y` из клона. Службы перезапускаются
+#      только при реальном обновлении.
+#
+#   vpn-split-update [--no-pull] [--dry-run]
+#
+# Клон — каталог, из которого последний раз запускали install.sh (SRC_DIR в
+# $PREFIX/share/layout.env). Выключить: AUTO_UPDATE=0 в vpn-split.conf и
+# повторить sudo ./install.sh.
+set -uo pipefail
+export GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes}"
+
+PREFIX="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PULL=1; DRY=0
+for a in "$@"; do
+  case "$a" in
+    --no-pull) PULL=0 ;;
+    --dry-run) DRY=1 ;;
+    -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "неизвестный аргумент: $a" >&2; exit 2 ;;
+  esac
+done
+
+log() { printf '[%s] %s\n' "$(date '+%F %T')" "$*"; }
+
+SRC="$(sed -n 's/^SRC_DIR=//p' "$PREFIX/share/layout.env" 2>/dev/null)"
+[[ -n $SRC && -d $SRC/.git ]] || { log "клон не найден (SRC_DIR=${SRC:-пусто}) — нечего обновлять"; exit 0; }
+
+# одна копия за раз (install.sh тоже может перезапустить таймер)
+LOCK="${TMPDIR:-/tmp}/vpn-split-update.lock"
+mkdir "$LOCK" 2>/dev/null || { log "уже работает другая копия"; exit 0; }
+trap 'rmdir "$LOCK"' EXIT
+
+owner="$(stat -c %U "$SRC" 2>/dev/null || stat -f %Su "$SRC")"
+git_src() { git -c safe.directory="$SRC" -C "$SRC" "$@"; }   # чтение — от root
+as_owner() {
+  local e=(env GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="$GIT_SSH_COMMAND")
+  if [[ $(id -un) == "$owner" ]]; then "$@"
+  elif command -v sudo >/dev/null 2>&1; then sudo -H -u "$owner" "${e[@]}" "$@"
+  else runuser -u "$owner" -- "${e[@]}" HOME="$(getent passwd "$owner" | cut -d: -f6)" "$@"; fi
+}
+
+branch="$(git_src symbolic-ref -q --short HEAD || true)"
+if [[ $branch != main ]]; then
+  log "$SRC: выгружена ${branch:-detached HEAD}, а не main — пропускаю"; exit 0
+fi
+if [[ -n $(git_src status --porcelain --untracked-files=no) ]]; then
+  log "$SRC: есть незакоммиченные изменения — пропускаю"; exit 0
+fi
+
+if [[ $PULL -eq 1 ]]; then
+  if as_owner git -C "$SRC" fetch -q origin main && as_owner git -C "$SRC" merge -q --ff-only FETCH_HEAD; then
+    :
+  else
+    log "$SRC: main не обновлена (fetch или fast-forward не удался) — проверяю то, что уже есть"
+  fi
+fi
+
+head="$(git_src rev-parse HEAD)"
+installed="$(cat "$PREFIX/share/source-rev" 2>/dev/null || true)"
+if [[ $head == "$installed" ]]; then
+  log "установлен актуальный коммит ${head:0:12}"; exit 0
+fi
+log "обновление ${installed:0:12} -> ${head:0:12}: $(git_src log -1 --format=%s "$head")"
+[[ $DRY -eq 1 ]] && exit 0
+VPN_SPLIT_SELF_UPDATE=1 "$SRC/install.sh" --no-deps -y
