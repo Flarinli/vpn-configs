@@ -187,14 +187,14 @@ def bump(names, major):
     if binaries:
         sb = new.get("sing-box", env["SINGBOX_VERSION"])
         xr = new.get("xray", env["XRAY_VERSION"])
-        subprocess.run([os.path.join(ROOT, "tools", "update-versions.sh"), sb, xr],
+        subprocess.run(["bash", os.path.join(ROOT, "tools", "update-versions.sh"), sb, xr],
                        check=True, stdout=subprocess.DEVNULL)
         for n in binaries:
             print("bump %s %s -> %s" % (n, env[BINARIES[n][1]], new[n]))
     if "rules" in new:
         old = parse_kv(RULES_SOURCES).get("BUILT", "?")
         with tempfile.TemporaryDirectory() as tmp:
-            subprocess.run([os.path.join(ROOT, "tools", "build-rules.sh")],
+            subprocess.run(["bash", os.path.join(ROOT, "tools", "build-rules.sh")],
                            env=dict(os.environ, SINGBOX=stage_singbox(tmp)),
                            check=True, stdout=subprocess.DEVNULL)
         src = parse_kv(RULES_SOURCES)
