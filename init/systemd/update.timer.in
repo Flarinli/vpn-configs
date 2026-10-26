@@ -1,0 +1,10 @@
+[Unit]
+Description=vpn-split: ежечасная проверка обновлений в клоне репозитория
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

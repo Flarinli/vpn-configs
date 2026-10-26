@@ -7,6 +7,10 @@
 #   sudo ./install.sh uninstall [--purge]  удалить (--purge — вместе с настройками и состоянием)
 #   ./install.sh status                    состояние служб и текущий узел
 #
+# Если установка запущена из git-клона, ставится и таймер автообновления
+# (vpn-split-update, раз в час): он подтягивает main клона и при новом коммите
+# повторяет установку. Выключить: AUTO_UPDATE=0 в vpn-split.conf.
+#
 # Опции:
 #   --no-deps        не ставить зависимости, только проверить наличие
 #   --check-only     (deps) только отчёт; код возврата ≠0, если чего-то не хватает
@@ -84,7 +88,7 @@ for a in ${1+"$@"}; do
     --migrate-xray) MIGRATE_XRAY=1 ;;
     --purge)        PURGE=1 ;;
     -y|--yes)       ASSUME_YES=1 ;;
-    -h|--help)      sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)      sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "неизвестный аргумент: $a (см. --help)" ;;
   esac
 done
@@ -412,7 +416,7 @@ install_files() {
   install -d -m 755 "$p/bin" "$p/lib" "$p/libexec" "$p/share/rules"
   install -m 755 "$REPO/bin/vpn-urls" "$p/bin/vpn-urls"
   install -m 644 "$REPO/lib/vpnsplit.py" "$p/lib/vpnsplit.py"
-  for f in vpn-autoselect render-config migrate-legacy; do
+  for f in vpn-autoselect render-config migrate-legacy vpn-split-update; do
     install -m 755 "$REPO/libexec/$f" "$p/libexec/$f"
   done
   install -m 644 "$REPO/share/singbox.json.tmpl" "$REPO/etc/vpn-split.conf.example" "$p/share/"
@@ -428,6 +432,7 @@ LOGDIR=$LOGDIR
 UNIT_PREFIX=$UNIT_PREFIX
 LABEL_PREFIX=$LABEL_PREFIX
 PYTHON=$PYTHON
+SRC_DIR=$REPO
 EOF
   chmod 644 "$p/share/layout.env"
 }
@@ -587,6 +592,14 @@ LoadCredential=xray.json:$STATEDIR/xray.json"
     for s in autoselect.service autoselect.timer tun.service; do
       render_template "$REPO/init/systemd/$s.in" "$D$SYSTEMD_DIR/$UNIT_PREFIX-$s" 644
     done
+    for s in update.service update.timer; do
+      if auto_update; then
+        render_template "$REPO/init/systemd/$s.in" "$D$SYSTEMD_DIR/$UNIT_PREFIX-$s" 644
+      elif [[ -f $D$SYSTEMD_DIR/$UNIT_PREFIX-$s ]]; then
+        [[ $NO_START -eq 0 ]] && systemctl disable --now "$UNIT_PREFIX-$s" 2>/dev/null || true
+        rm -f "$D$SYSTEMD_DIR/$UNIT_PREFIX-$s"
+      fi
+    done
   else
     log "LaunchDaemons -> $LAUNCHD_DIR"
     mkd "$D$LAUNCHD_DIR" "$D$NEWSYSLOG_DIR"
@@ -595,6 +608,30 @@ LoadCredential=xray.json:$STATEDIR/xray.json"
       [[ $EUID -eq 0 ]] && chown root:wheel "$D$LAUNCHD_DIR/$LABEL_PREFIX.$s.plist"
     done
     render_template "$REPO/init/launchd/newsyslog.conf.in" "$D$NEWSYSLOG_DIR/$UNIT_PREFIX.conf" 644
+    if auto_update; then
+      render_template "$REPO/init/launchd/update.plist.in" "$D$LAUNCHD_DIR/$LABEL_PREFIX.update.plist" 644
+      [[ $EUID -eq 0 ]] && chown root:wheel "$D$LAUNCHD_DIR/$LABEL_PREFIX.update.plist"
+    elif [[ -f $D$LAUNCHD_DIR/$LABEL_PREFIX.update.plist ]]; then
+      [[ $NO_START -eq 0 ]] && launchctl bootout "system/$LABEL_PREFIX.update" 2>/dev/null || true
+      rm -f "$D$LAUNCHD_DIR/$LABEL_PREFIX.update.plist"
+    fi
+  fi
+}
+
+# автообновление: только из git-клона и если не выключено AUTO_UPDATE=0
+auto_update() {
+  [[ -e $REPO/.git ]] && have git && [[ $(conf_get AUTO_UPDATE) != 0 ]]
+}
+
+# коммит клона, из которого установлено (сравнивает vpn-split-update);
+# пишется последним, чтобы неудачная установка повторилась при следующей проверке
+record_source_rev() {
+  local rev=""
+  [[ -e $REPO/.git ]] && have git && rev="$(git -c safe.directory="$REPO" -C "$REPO" rev-parse HEAD 2>/dev/null || true)"
+  if [[ -n $rev ]]; then
+    printf '%s\n' "$rev" > "$D$PREFIX/share/source-rev"
+  else
+    rm -f "$D$PREFIX/share/source-rev"
   fi
 }
 
@@ -630,14 +667,22 @@ start_services() {
     systemctl enable --quiet "$UNIT_PREFIX-xray.service" "$UNIT_PREFIX-autoselect.timer" "$UNIT_PREFIX-tun.service"
     systemctl restart "$UNIT_PREFIX-xray.service" "$UNIT_PREFIX-autoselect.timer"
     systemctl restart "$UNIT_PREFIX-tun.service"
+    if auto_update; then
+      systemctl enable --quiet "$UNIT_PREFIX-update.timer"
+      systemctl restart "$UNIT_PREFIX-update.timer"
+    fi
     sleep 3
-    for s in xray.service autoselect.timer tun.service; do
+    for s in xray.service autoselect.timer tun.service update.timer; do
+      [[ -f $SYSTEMD_DIR/$UNIT_PREFIX-$s ]] || continue
       info "$(printf '%-28s %s' "$UNIT_PREFIX-$s" "$(systemctl is-active "$UNIT_PREFIX-$s" || true)")"
     done
   else
     for s in $SERVICES; do launchd_load "$s"; done
+    # из самого vpn-split-update не перезагружаем: bootout убил бы текущий запуск
+    if auto_update && [[ -z ${VPN_SPLIT_SELF_UPDATE:-} ]]; then launchd_load update; fi
     sleep 3
-    for s in $SERVICES; do
+    for s in $SERVICES update; do
+      [[ -f $LAUNCHD_DIR/$LABEL_PREFIX.$s.plist ]] || continue
       info "$LABEL_PREFIX.$s: $(launchctl print "system/$LABEL_PREFIX.$s" 2>/dev/null | awk '/^\tstate =/{print $3; exit}')"
     done
   fi
@@ -660,6 +705,7 @@ cmd_install() {
   install_wrappers
   install_units
   start_services
+  record_source_rev
   cat <<EOF
 
 Готово: vpn-split $VPN_SPLIT_VERSION ($OS/$ARCH, Python: $PYTHON)
@@ -667,6 +713,7 @@ cmd_install() {
   состояние:   $STATEDIR/status.json (текущие узлы)
   свои домены: sudo vpn-urls add example.com | vpn-urls list
   статус:      sudo $0 status
+  обновления:  $(auto_update && echo "автоматически из $REPO (vpn-split-update, раз в час)" || echo "вручную: git pull && sudo $0")
   проверка:    curl --noproxy '*' -s https://api.ipify.org          # RU IP = остальное напрямую
                curl --noproxy '*' -sI https://www.instagram.com/    # 200 = заблокированное через VPN
 EOF
@@ -679,14 +726,15 @@ cmd_uninstall() {
   if [[ $OS == linux ]]; then
     if [[ $NO_START -eq 0 ]]; then
       systemctl disable --now "$UNIT_PREFIX-tun.service" "$UNIT_PREFIX-autoselect.timer" \
-        "$UNIT_PREFIX-autoselect.service" "$UNIT_PREFIX-xray.service" 2>/dev/null || true
+        "$UNIT_PREFIX-autoselect.service" "$UNIT_PREFIX-xray.service" \
+        "$UNIT_PREFIX-update.timer" "$UNIT_PREFIX-update.service" 2>/dev/null || true
     fi
-    for s in xray.service autoselect.service autoselect.timer tun.service; do
+    for s in xray.service autoselect.service autoselect.timer tun.service update.service update.timer; do
       rm -f "$D$SYSTEMD_DIR/$UNIT_PREFIX-$s"
     done
     [[ $NO_START -eq 0 ]] && systemctl daemon-reload
   else
-    for s in tun autoselect xray; do
+    for s in update tun autoselect xray; do
       [[ $NO_START -eq 0 ]] && launchctl bootout "system/$LABEL_PREFIX.$s" 2>/dev/null || true
       rm -f "$D$LAUNCHD_DIR/$LABEL_PREFIX.$s.plist"
     done
@@ -708,12 +756,12 @@ cmd_uninstall() {
 cmd_status() {
   local s
   if [[ $OS == linux ]]; then
-    for s in xray.service autoselect.timer tun.service; do
+    for s in xray.service autoselect.timer tun.service update.timer; do
       printf '%-28s %s\n' "$UNIT_PREFIX-$s" "$(systemctl is-active "$UNIT_PREFIX-$s" 2>/dev/null || true)"
     done
-    info "логи: journalctl -u $UNIT_PREFIX-tun -u $UNIT_PREFIX-xray -u $UNIT_PREFIX-autoselect"
+    info "логи: journalctl -u $UNIT_PREFIX-tun -u $UNIT_PREFIX-xray -u $UNIT_PREFIX-autoselect -u $UNIT_PREFIX-update"
   else
-    for s in $SERVICES; do
+    for s in $SERVICES update; do
       printf '%-44s %s\n' "$LABEL_PREFIX.$s" \
         "$(launchctl print "system/$LABEL_PREFIX.$s" 2>/dev/null | awk '/^\tstate =/{print $3; exit}')"
     done
