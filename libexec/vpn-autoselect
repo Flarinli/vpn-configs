@@ -368,14 +368,23 @@ def build_config(nodes, iface):
                   "inboundTag": ["socks-in", "http-in"],
                   "network": "tcp,udp",
                   "balancerTag": "bal"})
+    # внутренний DNS xray (DoH) тоже через туннель: у внутренних запросов нет
+    # inboundTag, правило выше их не матчит — держим отдельное правило по адресу
+    # DNS-сервера (первым дефолтным outbound'ом они ушли бы напрямую)
+    rules.append({"type": "field",
+                  "ip": [CFG["DNS_PROXY"]],
+                  "network": "tcp,udp",
+                  "balancerTag": "bal"})
 
     cfg = {
         "log": {"loglevel": "warning"},
         # чистый резолв через туннель: без этого блока зонды observatory и правила
-        # по IP используют системный резолвер (в корпоративных сетях — отравленный)
+        # по IP используют системный резолвер (в корпоративных сетях — отравленный).
+        # У xray-полей DNS-сервера нет поля detour — маршрут DoH задаёт правило
+        # выше (по ip DNS_PROXY). localhost — запас, если DoH недоступен.
         "dns": {
             "servers": [
-                {"address": "https://1.1.1.1/dns-query", "detour": "bal"},
+                {"address": "https://%s/dns-query" % CFG["DNS_PROXY"]},
                 "localhost",
             ],
         },
