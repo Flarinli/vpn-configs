@@ -34,8 +34,11 @@
             ],
             "auto_route": true,
             "mtu": 1500,
+            "route_exclude_address": [
+                "213.208.170.209/32",
+                "10.0.0.0/8"
+            ],
             "stack": "mixed",
-            "strict_route": true,
             "tag": "tun-in",
             "type": "tun"
         }
@@ -80,6 +83,12 @@
             },
             {
                 "ip_is_private": true,
+                "outbound": "direct"
+            },
+            {
+                "domain_suffix": [
+                    "gosniias.ru"
+                ],
                 "outbound": "direct"
             },
             {
