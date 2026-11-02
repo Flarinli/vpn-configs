@@ -85,6 +85,7 @@ def default_settings():
         "SUB_TTL": "21600",
         "EXCLUDE_NAMES": "",
         "INCLUDE_NAMES": "",
+        "PRIORITY_NAMES": "",        # regex: совпавшие узлы ставятся в начало списка
         # проверка/выбор узлов
         "TEST_URL": "https://www.youtube.com/generate_204",
         "PROBE_URL": "https://www.youtube.com/generate_204",
@@ -101,6 +102,7 @@ def default_settings():
         "DNS_DIRECT": "77.88.8.8",
         "DNS_PROXY": "1.1.1.1",
         "DNS_PROXY_DOMAINS": "youtube.com,rutracker.org",
+        "PROXY_DOMAINS": "chatgpt.com,openai.com,oaistatic.com,oaiusercontent.com",
         "DIRECT_DOMAINS": "",
         "LOG_LEVEL": "info",
         # пути (по умолчанию выводятся из раскладки, переопределять обычно не нужно)
@@ -228,6 +230,9 @@ def render_singbox(cfg, os_name=OS_NAME, iface=None, extra_proxy=None, extra_dir
         d = json.load(f)
 
     proxy_domains = read_domains("proxy") if extra_proxy is None else extra_proxy
+    for x in split_list(cfg["PROXY_DOMAINS"]):
+        if x not in proxy_domains:
+            proxy_domains.append(x)
     direct_domains = split_list(cfg["DIRECT_DOMAINS"])
     for x in (read_domains("direct") if extra_direct is None else extra_direct):
         if x not in direct_domains:
