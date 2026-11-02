@@ -376,6 +376,9 @@ def build_config(nodes, iface):
                   "network": "tcp,udp",
                   "balancerTag": "bal"})
 
+    prio = re.compile(CFG["PRIORITY_NAMES"], re.I) if CFG["PRIORITY_NAMES"] else None
+    prio_tags = [n["outbound"]["tag"] for n in nodes
+                 if prio and prio.search(n["name"])]
     cfg = {
         "log": {"loglevel": "warning"},
         # чистый резолв через туннель: без этого блока зонды observatory и правила
@@ -392,7 +395,10 @@ def build_config(nodes, iface):
         "outbounds": outbounds,
         "routing": {
             "domainStrategy": "AsIs",
-            "balancers": [{"tag": "bal", "selector": ["node-"],
+            "balancers": [{"tag": "bal",
+                           # с PRIORITY_NAMES балансер пинается на приоритетные ноды,
+                           # чтобы страна выхода не менялась на лету
+                           "selector": prio_tags or ["node-"],
                            "strategy": {"type": "leastPing"}}],
             "rules": rules,
         },
