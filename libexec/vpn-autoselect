@@ -371,6 +371,14 @@ def build_config(nodes, iface):
 
     cfg = {
         "log": {"loglevel": "warning"},
+        # чистый резолв через туннель: без этого блока зонды observatory и правила
+        # по IP используют системный резолвер (в корпоративных сетях — отравленный)
+        "dns": {
+            "servers": [
+                {"address": "https://1.1.1.1/dns-query", "detour": "bal"},
+                "localhost",
+            ],
+        },
         "inbounds": inbounds,
         "outbounds": outbounds,
         "routing": {
@@ -525,6 +533,13 @@ def main():
         return 1
 
     alive.sort(key=lambda p: p["ping_ms"])
+    prio = re.compile(CFG["PRIORITY_NAMES"], re.I) if CFG["PRIORITY_NAMES"] else None
+    if prio:
+        # приоритетные имена — в начало; сортировка стабильна, внутри групп — по пингу
+        alive.sort(key=lambda p: (0 if prio.search(p["name"]) else 1, p["ping_ms"]))
+        LOG("[i] PRIORITY_NAMES=%r: приоритет у %s" % (
+            CFG["PRIORITY_NAMES"],
+            ", ".join(p["name"] for p in alive if prio.search(p["name"])) or "— (нет совпадений)"))
     limit = int(CFG["PING_TOP"])
     rest = [p for p in parsed if "ping_ms" not in p]  # не ответили по TCP сейчас
     if limit > 0:
