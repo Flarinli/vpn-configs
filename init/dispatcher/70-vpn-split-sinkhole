@@ -1,0 +1,10 @@
+#!/bin/bash
+# NetworkManager dispatcher: держать sinkhole-правила vpn-split после
+# поднятия/обновления DHCP (по образцу 50-office-net-guard).
+# Ставится install.sh в /etc/NetworkManager/dispatcher.d/70-vpn-split-sinkhole (Linux).
+case "$2" in
+  up|dhcp4-change)
+    /usr/local/bin/vpn-split-sinkhole-guard.sh >/dev/null 2>&1 || true
+    ;;
+esac
+exit 0

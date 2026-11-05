@@ -102,7 +102,8 @@ def default_settings():
         "DNS_DIRECT": "77.88.8.8",
         "DNS_PROXY": "1.1.1.1",
         "DNS_PROXY_DOMAINS": "youtube.com,rutracker.org",
-        "PROXY_DOMAINS": "chatgpt.com,openai.com,oaistatic.com,oaiusercontent.com",
+        "PROXY_DOMAINS": "chatgpt.com,openai.com,oaistatic.com,oaiusercontent.com,"
+                         "google.com,googleusercontent.com,googleapis.com,gstatic.com",
         "DIRECT_DOMAINS": "",
         "LOG_LEVEL": "info",
         # пути (по умолчанию выводятся из раскладки, переопределять обычно не нужно)
