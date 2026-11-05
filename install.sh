@@ -567,6 +567,13 @@ install_wrappers() {
   mkd "$D$BINDIR" "$D$SBINDIR"
   render_template "$REPO/init/wrapper.in" "$D$BINDIR/vpn-urls" 755 "TARGET=$PREFIX/bin/vpn-urls"
   render_template "$REPO/init/wrapper.in" "$D$SBINDIR/vpn-autoselect" 755 "TARGET=$PREFIX/libexec/vpn-autoselect"
+  # sinkhole-guard: отравленные корпоративным DNS IP -> table 2022 (см. шапку скрипта)
+  install -m 755 "$REPO/tools/vpn-split-sinkhole-guard.sh" "$D$BINDIR/vpn-split-sinkhole-guard.sh"
+  if [[ $OS == linux && -d $D/etc/NetworkManager/dispatcher.d ]]; then
+    log "NetworkManager dispatcher -> /etc/NetworkManager/dispatcher.d/70-vpn-split-sinkhole"
+    install -m 755 "$REPO/init/dispatcher/70-vpn-split-sinkhole" \
+      "$D/etc/NetworkManager/dispatcher.d/70-vpn-split-sinkhole"
+  fi
 }
 
 install_units() {
