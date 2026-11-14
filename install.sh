@@ -748,11 +748,14 @@ install_units() {
     render_template "$REPO/init/windows/xray.xml.in" "$D$PREFIX/bin/vpn-split-xray.xml" 644 \
       "PREFIX=$(winpath "$PREFIX")" "STATEDIR=$(winpath "$STATEDIR")" "LOGDIR=$(winpath "$LOGDIR")"
     [[ -n $D ]] && { info "DESTDIR: службы и задачи не ставятся"; return 0; }
-    # WinSW: создать службы (читают xml рядом с exe), старт — в start_services
-    "$PREFIX/bin/vpn-split-tun.exe" install >/dev/null \
-      || die "не удалось создать службу vpn-split-tun (нужны права администратора)"
-    "$PREFIX/bin/vpn-split-xray.exe" install >/dev/null \
-      || die "не удалось создать службу vpn-split-xray (нужны права администратора)"
+    # WinSW: пересоздать службы (install падает, если служба уже есть — как systemd
+    # unit-файлы перезаписываются и при повторном запуске)
+    local svc
+    for svc in tun xray; do
+      "$PREFIX/bin/vpn-split-$svc.exe" uninstall >/dev/null 2>&1 || true
+      "$PREFIX/bin/vpn-split-$svc.exe" install >/dev/null \
+        || die "не удалось создать службу vpn-split-$svc (нужны права администратора)"
+    done
     info "службы созданы: $UNIT_PREFIX-tun, $UNIT_PREFIX-xray (автостарт)"
     # задачи: autoselect — всегда; update — только для git-клона
     local ps1="$PREFIX/share/register-tasks.ps1"

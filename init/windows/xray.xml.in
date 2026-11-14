@@ -8,7 +8,7 @@
   <arguments>run -c "@STATEDIR@\xray.json"</arguments>
   <env name="XRAY_LOCATION_ASSET" value="@PREFIX@\share\xray"/>
   <startmode>Automatic</startmode>
-  <onfailure mode="restart" delay="5000"/>
+  <onfailure action="restart" delay="5 sec"/>
   <stoptimeout>15 sec</stoptimeout>
   <logpath>@LOGDIR@</logpath>
   <log mode="roll-by-size">

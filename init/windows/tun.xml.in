@@ -7,7 +7,7 @@
   <executable>cmd.exe</executable>
   <arguments>/d /c "@PREFIX@\bin\tun.cmd"</arguments>
   <startmode>Automatic</startmode>
-  <onfailure mode="restart" delay="5000"/>
+  <onfailure action="restart" delay="5 sec"/>
   <stoptimeout>15 sec</stoptimeout>
   <logpath>@LOGDIR@</logpath>
   <log mode="roll-by-size">
