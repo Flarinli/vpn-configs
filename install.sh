@@ -748,10 +748,11 @@ install_units() {
     render_template "$REPO/init/windows/xray.xml.in" "$D$PREFIX/bin/vpn-split-xray.xml" 644 \
       "PREFIX=$(winpath "$PREFIX")" "STATEDIR=$(winpath "$STATEDIR")" "LOGDIR=$(winpath "$LOGDIR")"
     [[ -n $D ]] && { info "DESTDIR: службы и задачи не ставятся"; return 0; }
-    # WinSW: пересоздать службы (install падает, если служба уже есть — как systemd
-    # unit-файлы перезаписываются и при повторном запуске)
+    # WinSW: пересоздать службы (install падает, если служба уже есть; uninstall —
+    # если служба запущена: сначала stopwait, как systemctl restart)
     local svc
     for svc in tun xray; do
+      "$PREFIX/bin/vpn-split-$svc.exe" stopwait >/dev/null 2>&1 || true
       "$PREFIX/bin/vpn-split-$svc.exe" uninstall >/dev/null 2>&1 || true
       "$PREFIX/bin/vpn-split-$svc.exe" install >/dev/null \
         || die "не удалось создать службу vpn-split-$svc (нужны права администратора)"
