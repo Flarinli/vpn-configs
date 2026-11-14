@@ -86,7 +86,7 @@ VPN_SPLIT_SUB_URL='https://…/sub/…' ./install.sh
 | Настройки (0600, токен подписки) | `/etc/vpn-split/vpn-split.conf`; Windows: `C:\ProgramData\vpn-split\etc` |
 | Ваши домены | `/etc/vpn-split/domains.proxy`, `/etc/vpn-split/domains.direct` |
 | Сгенерированные конфиги, статус | `/var/lib/vpn-split/{singbox.json,xray.json,status.json}`; Windows: `C:\ProgramData\vpn-split\lib` |
-| Логи | Linux: journald; macOS: `/var/log/vpn-split/*.log` (ротация newsyslog); Windows: `C:\ProgramData\vpn-split\log\{tun,xray}.log` (ротация WinSW) |
+| Логи | Linux: journald; macOS: `/var/log/vpn-split/*.log` (ротация newsyslog); Windows: `C:\ProgramData\vpn-split\log\vpn-split-{tun,xray}.{out,err,wrapper}.log` (ротация WinSW) |
 | Команды | `/usr/local/bin/vpn-urls`, `/usr/local/sbin/vpn-autoselect` (macOS: `/usr/local/bin`; Windows: `C:\Program Files\vpn-split\bin\vpn-urls.cmd`) |
 | Службы Linux | `vpn-split-tun.service`, `vpn-split-xray.service`, `vpn-split-autoselect.timer`, `vpn-split-update.timer` |
 | Службы macOS | `io.github.flarinli.vpn-split.{tun,xray,autoselect,update}` в `/Library/LaunchDaemons` |
@@ -142,9 +142,9 @@ cat /var/lib/vpn-split/status.json                        # текущая но�
 
 - Linux: `journalctl -u vpn-split-tun -u vpn-split-xray -u vpn-split-autoselect -f`
 - macOS: `tail -f /var/log/vpn-split/*.log`
-- Windows: логи WinSW `C:\ProgramData\vpn-split\log\{tun,xray}.log`; статус служб —
-  `Get-Service vpn-split-tun, vpn-split-xray`; история задачи —
-  Планировщик заданий → vpn-split-autoselect.
+- Windows: логи WinSW `C:\ProgramData\vpn-split\log\vpn-split-tun.err.log` (sing-box)
+  и `vpn-split-xray.out.log` (xray); статус служб — `Get-Service vpn-split-tun, vpn-split-xray`;
+  история задачи — Планировщик заданий → vpn-split-autoselect.
 
 ## Обновления
 

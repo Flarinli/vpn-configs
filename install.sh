@@ -930,7 +930,7 @@ cmd_install() {
   службы:      vpn-split-tun, vpn-split-xray (автостарт); задачи vpn-split-autoselect (10 мин)
   свои домены: vpn-urls.cmd add example.com  (консоль от имени администратора)
                список: vpn-urls.cmd list; добавить $PREFIX\\bin в PATH при желании
-  статус:      $0 status   логи: $LOGDIR\\tun.log, $LOGDIR\\xray.log (WinSW)
+  статус:      $0 status   логи: $LOGDIR\\vpn-split-tun.err.log, $LOGDIR\\vpn-split-xray.out.log (WinSW)
   обновления:  $(auto_update && echo "автоматически из $REPO (задача vpn-split-update, раз в час)" || echo "вручную: git pull && $0")
   проверка:    curl --noproxy '*' -s https://api.ipify.org          # RU IP = остальное напрямую
                curl --noproxy '*' -sI https://www.instagram.com/    # 200 = заблокированное через VPN
@@ -1000,7 +1000,7 @@ cmd_status() {
   if [[ $OS == windows ]]; then
     powershell -NoProfile -Command 'Get-Service vpn-split-tun, vpn-split-xray | Format-Table Name, Status -AutoSize'
     MSYS_NO_PATHCONV=1 schtasks /Query /FO CSV 2>/dev/null | grep -i "vpn-split" || true
-    info "логи: $LOGDIR\\tun.log, $LOGDIR\\xray.log"
+    info "логи: $LOGDIR\\vpn-split-tun.err.log, $LOGDIR\\vpn-split-xray.out.log"
   elif [[ $OS == linux ]]; then
     for s in xray.service autoselect.timer tun.service update.timer; do
       printf '%-28s %s\n' "$UNIT_PREFIX-$s" "$(systemctl is-active "$UNIT_PREFIX-$s" 2>/dev/null || true)"
