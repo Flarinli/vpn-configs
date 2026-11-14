@@ -24,6 +24,7 @@ import vpnsplit  # noqa: E402
 
 
 def main():
+    vpnsplit.setup_stdio()
     ap = argparse.ArgumentParser(description="render sing-box config for vpn-split")
     ap.add_argument("--conf", default=None, help="путь к vpn-split.conf")
     ap.add_argument("--os", choices=("linux", "darwin", "windows"), default=vpnsplit.OS_NAME)

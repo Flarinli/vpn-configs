@@ -54,6 +54,7 @@ def edit(action, items):
 
 
 def main():
+    vpnsplit.setup_stdio()
     ap = argparse.ArgumentParser(prog="vpn-urls", description=__doc__.split("\n")[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter,
                                  epilog="\n".join(__doc__.split("\n")[1:]))

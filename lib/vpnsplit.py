@@ -30,6 +30,27 @@ OS_NAME = "darwin" if IS_MAC else ("windows" if IS_WINDOWS else "linux")
 
 PREFIX = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+
+def setup_stdio():
+    """Windows: служба/планировщик/консоль могут отдать stdout в ANSI-кодировке
+    (cp1251/cp1252) или вообще без валидного потока — кириллица в логах не должна
+    ронять скрипты (UnicodeEncodeError). Перенаправленный вывод — UTF-8."""
+    for attr in ("stdout", "stderr"):
+        s = getattr(sys, attr)
+        if s is None:  # запущено службой/задачей без потока ввода-вывода
+            setattr(sys, attr, open(os.devnull, "w", encoding="utf-8"))
+            continue
+        if not hasattr(s, "reconfigure"):
+            continue
+        try:
+            if s.isatty():
+                s.reconfigure(errors="replace")
+            else:
+                s.reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError, AttributeError):
+            pass
+
+
 if IS_WINDOWS:
     _LAYOUT_OS = {
         "SYSCONFDIR": "C:/ProgramData/vpn-split/etc",
@@ -351,6 +372,7 @@ def restart_service(name):
 # --------------------------------------------------------------------- CLI ---
 
 def _cli(argv):
+    setup_stdio()
     if len(argv) >= 3 and argv[0] == "set-conf":
         values = dict(a.split("=", 1) for a in argv[2:])
         set_conf_values(argv[1], values)

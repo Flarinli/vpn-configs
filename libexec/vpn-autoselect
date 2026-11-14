@@ -453,6 +453,7 @@ def xray_validate(path):
 
 def main():
     global CFG
+    vpnsplit.setup_stdio()
     ap = argparse.ArgumentParser(description="auto-select fastest VPN node for system xray")
     ap.add_argument("--conf", default=vpnsplit.conf_path())
     ap.add_argument("--dry-run", action="store_true", help="не менять конфиг/xray, только отчёт")
