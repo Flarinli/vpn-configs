@@ -32,8 +32,10 @@ if ($src -and (Test-Path (Join-Path $src '.git')) -and $bash) {
   $a2 = New-ScheduledTaskAction -Execute $bash -Argument ('"' + $upd + '"')
   $t2 = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(10) `
         -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration $indef
+  # LogonType lives on the principal, not on Register-ScheduledTask
+  $p2 = New-ScheduledTaskPrincipal -UserId $owner -LogonType Interactive -RunLevel Highest
   Register-ScheduledTask -TaskName '@UNIT_PREFIX@-update' -Action $a2 -Trigger $t2 `
-    -User $owner -LogonType Interactive -RunLevel Highest -Force | Out-Null
+    -Principal $p2 -Force | Out-Null
   Write-Output ('task: @UNIT_PREFIX@-update (' + $owner + ', hourly)')
 } else {
   Write-Output 'task: update skipped (no git clone or AUTO_UPDATE=0)'
