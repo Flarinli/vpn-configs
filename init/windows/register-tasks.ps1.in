@@ -15,7 +15,9 @@ $upd   = Join-Path $pref 'libexec\vpn-split-update'
 $owner = '@OWNER@'
 $src   = '@SRC_DIR@'
 $bash  = '@GITBASH@'
-$indef = [TimeSpan]::MaxValue
+# 10 years instead of [TimeSpan]::MaxValue: PS 5.1 serializes MaxValue as
+# P99999999DT... which Task Scheduler rejects ("out of range").
+$indef = New-TimeSpan -Days 3650
 
 # --- autoselect: every 10 minutes, SYSTEM ------------------------------------
 $a = New-ScheduledTaskAction -Execute $py -Argument ('"' + $autos + '"')
