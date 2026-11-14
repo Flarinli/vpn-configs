@@ -41,14 +41,20 @@ LOCK="${TMPDIR:-/tmp}/vpn-split-update.lock"
 mkdir "$LOCK" 2>/dev/null || { log "уже работает другая копия"; exit 0; }
 trap 'rmdir "$LOCK"' EXIT
 
-owner="$(stat -c %U "$SRC" 2>/dev/null || stat -f %Su "$SRC")"
 git_src() { git -c safe.directory="$SRC" -C "$SRC" "$@"; }   # чтение — от root
-as_owner() {
-  local e=(env GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="$GIT_SSH_COMMAND")
-  if [[ $(id -un) == "$owner" ]]; then "$@"
-  elif command -v sudo >/dev/null 2>&1; then sudo -H -u "$owner" "${e[@]}" "$@"
-  else runuser -u "$owner" -- "${e[@]}" HOME="$(getent passwd "$owner" | cut -d: -f6)" "$@"; fi
-}
+if [[ $(uname -s) == MINGW* || $(uname -s) == MSYS* || $(uname -s) == CYGWIN* ]]; then
+  # Windows: задача vpn-split-update уже выполняется от владельца клона с
+  # повышенными правами (RunLevel Highest); sudo/runuser не существует.
+  as_owner() { "$@"; }
+else
+  owner="$(stat -c %U "$SRC" 2>/dev/null || stat -f %Su "$SRC")"
+  as_owner() {
+    local e=(env GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="$GIT_SSH_COMMAND")
+    if [[ $(id -un) == "$owner" ]]; then "$@"
+    elif command -v sudo >/dev/null 2>&1; then sudo -H -u "$owner" "${e[@]}" "$@"
+    else runuser -u "$owner" -- "${e[@]}" HOME="$(getent passwd "$owner" | cut -d: -f6)" "$@"; fi
+  }
+fi
 
 branch="$(git_src symbolic-ref -q --short HEAD || true)"
 if [[ $branch != main ]]; then

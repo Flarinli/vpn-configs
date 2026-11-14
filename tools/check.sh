@@ -13,7 +13,11 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-PY="${PYTHON:-python3}"
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) OS_TAG=windows; PY="${PYTHON:-python}" ;;
+  Darwin)               OS_TAG=darwin;  PY="${PYTHON:-python3}" ;;
+  *)                    OS_TAG=linux;   PY="${PYTHON:-python3}" ;;
+esac
 
 step() { printf '\n== %s\n' "$*"; }
 
@@ -38,16 +42,20 @@ step "тесты"
 
 step "поэтапная установка (DESTDIR)"
 D="$WORK/stage"
-DESTDIR="$D" ./install.sh --no-deps -y >"$WORK/install.log" 2>&1 || { cat "$WORK/install.log"; exit 1; }
-P="$D/opt/vpn-split"
+# на Windows DESTDIR склеивается с PREFIX — только POSIX-префикс (см. install.sh)
+STAGE_PREFIX=/opt/vpn-split
+DESTDIR="$D" PREFIX="$STAGE_PREFIX" ./install.sh --no-deps -y >"$WORK/install.log" 2>&1 || { cat "$WORK/install.log"; exit 1; }
+P="$D$STAGE_PREFIX"
 "$P/bin/sing-box" version | head -1
 "$P/bin/xray" version | head -1
 [[ -f $P/share/source-rev ]] && echo "source-rev: $(cat "$P/share/source-rev")"
-if [[ -e .git ]]; then  # из клона ставится и таймер автообновления
-  case "$(uname -s)" in
-    Linux)  ls "$D"/etc/systemd/system/vpn-split-update.{service,timer} ;;
-    Darwin) ls "$D"/Library/LaunchDaemons/io.github.flarinli.vpn-split.update.plist ;;
+if [[ -e .git && $OS_TAG != windows ]]; then  # из клона ставится и таймер автообновления
+  case "$OS_TAG" in
+    linux)  ls "$D"/etc/systemd/system/vpn-split-update.{service,timer} ;;
+    darwin) ls "$D"/Library/LaunchDaemons/io.github.flarinli.vpn-split.update.plist ;;
   esac
+elif [[ -e .git && $OS_TAG == windows ]]; then
+  ls "$P"/bin/vpn-split-tun.xml "$P"/bin/vpn-split-xray.xml "$P"/bin/tun.cmd
 fi
 
 export VPN_SPLIT_SYSCONFDIR="$D/etc/vpn-split" VPN_SPLIT_STATEDIR="$D/var/lib/vpn-split"
@@ -55,7 +63,7 @@ export VPN_SPLIT_CONF="$D/etc/vpn-split/vpn-split.conf"
 
 # только под текущую ОС: часть опций (default_mark) sing-box принимает лишь на
 # своей платформе; вторую ОС проверяет соседний job матрицы CI
-case "$(uname -s)" in Darwin) os=darwin ;; *) os=linux ;; esac
+os=$OS_TAG
 step "sing-box check ($os)"
 "$PY" "$P/libexec/render-config" --os "$os" --iface lo --stdout >"$WORK/singbox.json"
 "$P/bin/sing-box" check -c "$WORK/singbox.json"

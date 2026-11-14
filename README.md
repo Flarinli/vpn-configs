@@ -4,7 +4,8 @@
 `ru-blocked-all`: ~1.36 млн доменов + 89.5 тыс. подсетей) и к доменам, которые вы
 явно добавили. Весь остальной трафик, включая офисные и приватные сети, идёт напрямую.
 
-Одна установка для **Linux (systemd)** и **macOS (launchd)**, amd64/arm64.
+Одна установка для **Linux (systemd)**, **macOS (launchd)** и **Windows (Git Bash +
+WinSW + Планировщик заданий)**, amd64/arm64.
 
 ## Как это работает
 
@@ -25,8 +26,21 @@
 
 ```bash
 git clone … vpn-configs && cd vpn-configs
-sudo VPN_SPLIT_SUB_URL='https://…/sub/…' ./install.sh
+sudo VPN_SPLIT_SUB_URL='https://…/sub/…' ./install.sh        # Linux / macOS
 ```
+
+**Windows** — из Git Bash, запущенного «от имени администратора»:
+
+```bash
+git clone … vpn-configs && cd vpn-configs
+VPN_SPLIT_SUB_URL='https://…/sub/…' ./install.sh
+```
+
+Нужен Python ≥ 3.8 — если его нет, установщик ставит его через winget. Службы
+поднимаются как Windows-службы (WinSW) `vpn-split-tun` и `vpn-split-xray`
+(автостарт, от SYSTEM), расписание ведёт Планировщик заданий: `vpn-split-autoselect`
+(каждые 10 минут, от SYSTEM) и `vpn-split-update` (раз в час, от владельца клона,
+с повышенными правами — задача выполняется, только когда пользователь вошёл в систему).
 
 Без `VPN_SPLIT_SUB_URL` установщик спросит URL интерактивно (или впишите его
 потом в `/etc/vpn-split/vpn-split.conf` и повторите `sudo ./install.sh`).
@@ -68,14 +82,15 @@ sudo VPN_SPLIT_SUB_URL='https://…/sub/…' ./install.sh
 
 | Что | Путь |
 |---|---|
-| Бинарники и код | `/opt/vpn-split/{bin,lib,libexec,share}` |
-| Настройки (0600, токен подписки) | `/etc/vpn-split/vpn-split.conf` |
+| Бинарники и код | `/opt/vpn-split/{bin,lib,libexec,share}`; Windows: `C:\Program Files\vpn-split` |
+| Настройки (0600, токен подписки) | `/etc/vpn-split/vpn-split.conf`; Windows: `C:\ProgramData\vpn-split\etc` |
 | Ваши домены | `/etc/vpn-split/domains.proxy`, `/etc/vpn-split/domains.direct` |
-| Сгенерированные конфиги, статус | `/var/lib/vpn-split/{singbox.json,xray.json,status.json}` |
-| Логи | Linux: journald; macOS: `/var/log/vpn-split/*.log` (ротация newsyslog) |
-| Команды | `/usr/local/bin/vpn-urls`, `/usr/local/sbin/vpn-autoselect` (macOS: `/usr/local/bin`) |
+| Сгенерированные конфиги, статус | `/var/lib/vpn-split/{singbox.json,xray.json,status.json}`; Windows: `C:\ProgramData\vpn-split\lib` |
+| Логи | Linux: journald; macOS: `/var/log/vpn-split/*.log` (ротация newsyslog); Windows: `C:\ProgramData\vpn-split\log\{tun,xray}.log` (ротация WinSW) |
+| Команды | `/usr/local/bin/vpn-urls`, `/usr/local/sbin/vpn-autoselect` (macOS: `/usr/local/bin`; Windows: `C:\Program Files\vpn-split\bin\vpn-urls.cmd`) |
 | Службы Linux | `vpn-split-tun.service`, `vpn-split-xray.service`, `vpn-split-autoselect.timer`, `vpn-split-update.timer` |
 | Службы macOS | `io.github.flarinli.vpn-split.{tun,xray,autoselect,update}` в `/Library/LaunchDaemons` |
+| Службы Windows | службы `vpn-split-tun`, `vpn-split-xray` (WinSW); задачи планировщика `vpn-split-autoselect`, `vpn-split-update` |
 
 Симлинков нет: команды в PATH — это маленькие обёртки. Путь установки скрипты
 определяют по своему расположению и `share/layout.env`, который пишет установщик.
@@ -91,9 +106,13 @@ sudo VPN_SPLIT_SUB_URL='https://…/sub/…' ./install.sh
 по умолчанию OpenAI/ChatGPT — сервис блокирует RU-адреса напрямую), `SOCKS_PORT`.
 
 После правки:
-- подписка и узлы: `sudo vpn-autoselect --force`;
-- DNS, домены, порты: перезапустите TUN — `sudo systemctl restart vpn-split-tun`
-  или `sudo launchctl kickstart -k system/io.github.flarinli.vpn-split.tun`.
+- подписка и узлы: `sudo vpn-autoselect --force`
+  (Windows: запустите задачу планировщика `vpn-split-autoselect` или
+  `"C:\Program Files\vpn-split\bin\vpn-urls.cmd" list` из консоли администратора —
+  vpn-autoselect на Windows стоит как задача, вручную его можно вызвать из админ-консоли);
+- DNS, домены, порты: перезапустите TUN — `sudo systemctl restart vpn-split-tun`,
+  `sudo launchctl kickstart -k system/io.github.flarinli.vpn-split.tun` или
+  Windows: `powershell Restart-Service vpn-split-tun` (из консоли администратора).
 
 ## Свои домены
 
@@ -103,6 +122,9 @@ sudo vpn-urls add direct:example.com   # наоборот — всегда на�
 sudo vpn-urls remove netflix.com
 vpn-urls list
 ```
+
+Windows — те же команды через `vpn-urls.cmd` из консоли администратора
+(`"C:\Program Files\vpn-split\bin\vpn-urls.cmd" add netflix.com`).
 
 Списки лежат отдельно от сгенерированного конфига, поэтому переживают
 переустановку. На другую машину их можно перенести простым копированием
@@ -120,6 +142,9 @@ cat /var/lib/vpn-split/status.json                        # текущая но�
 
 - Linux: `journalctl -u vpn-split-tun -u vpn-split-xray -u vpn-split-autoselect -f`
 - macOS: `tail -f /var/log/vpn-split/*.log`
+- Windows: логи WinSW `C:\ProgramData\vpn-split\log\{tun,xray}.log`; статус служб —
+  `Get-Service vpn-split-tun, vpn-split-xray`; история задачи —
+  Планировщик заданий → vpn-split-autoselect.
 
 ## Обновления
 
@@ -140,6 +165,9 @@ cat /var/lib/vpn-split/status.json                        # текущая но�
    `origin/main` (только fast-forward, от имени владельца клона) и, если коммит
    изменился, повторяет `install.sh --no-deps -y`. Клон не трогается, если
    выгружена другая ветка или есть незакоммиченные изменения.
+   На Windows та же логика живёт в задаче планировщика `vpn-split-update`
+   (раз в час, от владельца клона с повышенными правами — Git Bash + `vpn-split-update`;
+   ключ SSH должен лежать в `~/.ssh` без пароля).
 
 Для fetch нужен доступ к приватному репозиторию без интерактивных запросов:
 ключ SSH без пароля или credential helper с токеном. На macOS ssh-agent и
@@ -189,6 +217,10 @@ sudo ./install.sh uninstall --purge  # удалить всё
 - На Linux sing-box привязывает прямой трафик к интерфейсу маршрута по умолчанию,
   который определяется при старте службы. После смены сети выполните
   `systemctl restart vpn-split-tun` (или задайте `DEFAULT_IFACE`).
+- Windows: `vpn-urls.cmd` и команды `install.sh` требуют консоль от имени
+  администратора. Задача `vpn-split-update` выполняется, только когда владелец
+  клона вошёл в систему. При смене сети TUN трогать не нужно — sing-box на
+  Windows сам отслеживает интерфейсы (`auto_detect_interface`).
 - Названия узлов в подписке (страны) — метки провайдера, они не гарантируют
   страну выхода: у части провайдеров выходной IP общий для всех нод. Проверить
   фактический выход: `curl --noproxy '*' -s --socks5-hostname 127.0.0.1:20808 https://1.1.1.1/cdn-cgi/trace`

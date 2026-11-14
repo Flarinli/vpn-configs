@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- vpn-split: служба Windows для xray (генерирует install.sh из init/windows/xray.xml.in) -->
+<service>
+  <id>@UNIT_PREFIX@-xray</id>
+  <name>vpn-split xray</name>
+  <description>vpn-split: xray local SOCKS/HTTP proxy (nodes from subscription)</description>
+  <executable>@PREFIX@\bin\xray.exe</executable>
+  <arguments>run -c "@STATEDIR@\xray.json"</arguments>
+  <env name="XRAY_LOCATION_ASSET" value="@PREFIX@\share\xray"/>
+  <startmode>Automatic</startmode>
+  <onfailure mode="restart" delay="5000"/>
+  <stoptimeout>15 sec</stoptimeout>
+  <logpath>@LOGDIR@</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>4</keepFiles>
+  </log>
+</service>

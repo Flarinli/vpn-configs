@@ -1,5 +1,6 @@
 # vpn-split — настройки (общие для sing-box TUN, xray и vpn-autoselect).
-# Установлен в $SYSCONFDIR/vpn-split.conf (по умолчанию /etc/vpn-split/vpn-split.conf),
+# Установлен в $SYSCONFDIR/vpn-split.conf (по умолчанию /etc/vpn-split/vpn-split.conf,
+# Windows: C:\ProgramData\vpn-split\etc\vpn-split.conf),
 # права root 600 — файл содержит ссылку-токен подписки.
 # Формат KEY=VALUE; закомментированные ключи используют значение по умолчанию.
 # После правки: sudo vpn-autoselect --force  (подписка/узлы)

@@ -1,0 +1,36 @@
+# vpn-split: регистрация задач Планировщика Windows (генерирует install.sh из
+# init/windows/register-tasks.ps1.in).
+#   autoselect — каждые 10 минут от SYSTEM: подписка, выбор узла, рестарт xray.
+#   update     — раз в час от владельца клона ( elevated, RunLevel Highest):
+#                git fast-forward + переустановка. Только если есть git-клон.
+# Повторный запуск безопасен: Register-ScheduledTask -Force перезатирает задачу.
+$ErrorActionPreference = 'Stop'
+
+$py    = '@PYTHON@'
+$pref  = '@PREFIX@'
+$autos = Join-Path $pref 'libexec\vpn-autoselect'
+$upd   = Join-Path $pref 'libexec\vpn-split-update'
+$owner = '@OWNER@'
+$src   = '@SRC_DIR@'
+$bash  = '@GITBASH@'
+$indef = [TimeSpan]::MaxValue
+
+# --- autoselect: каждые 10 минут, SYSTEM -------------------------------------
+$a = New-ScheduledTaskAction -Execute $py -Argument ('"' + $autos + '"')
+$t = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
+      -RepetitionInterval (New-TimeSpan -Minutes 10) -RepetitionDuration $indef
+Register-ScheduledTask -TaskName '@UNIT_PREFIX@-autoselect' -Action $a -Trigger $t `
+  -User 'SYSTEM' -RunLevel Highest -Force | Out-Null
+Write-Output ('task: @UNIT_PREFIX@-autoselect (SYSTEM, каждые 10 минут)')
+
+# --- update: раз в час, владелец клона, elevated ------------------------------
+if ($src -and (Test-Path (Join-Path $src '.git')) -and $bash) {
+  $a2 = New-ScheduledTaskAction -Execute $bash -Argument ('"' + $upd + '"')
+  $t2 = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(10) `
+        -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration $indef
+  Register-ScheduledTask -TaskName '@UNIT_PREFIX@-update' -Action $a2 -Trigger $t2 `
+    -User $owner -LogonType Interactive -RunLevel Highest -Force | Out-Null
+  Write-Output ('task: @UNIT_PREFIX@-update (' + $owner + ', раз в час)')
+} else {
+  Write-Output 'task: update пропущена (нет git-клона или AUTO_UPDATE=0)'
+}

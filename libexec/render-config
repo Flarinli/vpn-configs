@@ -16,6 +16,7 @@ Linux: вызывается из ExecStartPre юнита tun — интерфе�
 import argparse
 import json
 import os
+import subprocess
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
@@ -25,7 +26,7 @@ import vpnsplit  # noqa: E402
 def main():
     ap = argparse.ArgumentParser(description="render sing-box config for vpn-split")
     ap.add_argument("--conf", default=None, help="путь к vpn-split.conf")
-    ap.add_argument("--os", choices=("linux", "darwin"), default=vpnsplit.OS_NAME)
+    ap.add_argument("--os", choices=("linux", "darwin", "windows"), default=vpnsplit.OS_NAME)
     ap.add_argument("--iface", default=None, help="интерфейс вместо автоопределения")
     ap.add_argument("--stdout", action="store_true", help="вывести конфиг, ничего не записывая")
     ap.add_argument("--no-check", action="store_true", help="не запускать sing-box check")
@@ -45,6 +46,10 @@ def main():
         return 1
     if args.exec:
         sys.stdout.flush()
+        if vpnsplit.IS_WINDOWS:
+            # os.execv на Windows заменяет процесс только частично; WinSW следит за потомком
+            r = subprocess.run([cfg["SINGBOX_BIN"], "run", "-c", path])
+            return r.returncode
         os.execv(cfg["SINGBOX_BIN"], [cfg["SINGBOX_BIN"], "run", "-c", path])
     print("render-config: %s" % path)
     return 0

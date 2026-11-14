@@ -1,0 +1,3 @@
+@echo off
+rem vpn-split: обёртка vpn-urls (генерирует install.sh из init/windows/vpn-urls.cmd.in)
+"@PYTHON@" "@PREFIX@\bin\vpn-urls.py" %*

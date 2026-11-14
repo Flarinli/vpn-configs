@@ -26,7 +26,6 @@ vpn-autoselect — автоматический выбор самого быст
 import argparse
 import base64
 import concurrent.futures
-import fcntl
 import hashlib
 import ipaddress
 import json
@@ -41,12 +40,19 @@ import time
 import urllib.parse
 import urllib.request
 
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
+    import msvcrt
+
 # ---------------------------------------------------------------- settings ---
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
 import vpnsplit  # noqa: E402
 
 IS_MAC = vpnsplit.IS_MAC
+IS_WINDOWS = vpnsplit.IS_WINDOWS
 
 LOG = lambda msg: print(msg, flush=True)
 
@@ -56,6 +62,19 @@ LOG = lambda msg: print(msg, flush=True)
 def default_iface():
     """Имя физического интерфейса основного маршрута + его IP."""
     try:
+        if IS_WINDOWS:
+            # PS: маршрут 0.0.0.0/0 физического интерфейса (маршруты TUN 0/1 и /1 —
+            # более специфичные префиксы, сюда не попадают)
+            ps = ("$r = Get-NetRoute -DestinationPrefix '0.0.0.0/0' -AddressFamily IPv4 "
+                  "-ErrorAction Stop | Sort-Object RouteMetric | Select-Object -First 1; "
+                  "$ip = (Get-NetIPAddress -InterfaceIndex $r.InterfaceIndex -AddressFamily IPv4 "
+                  "-ErrorAction SilentlyContinue | Select-Object -First 1).IPAddress; "
+                  "Write-Output ($r.InterfaceAlias + '|' + $ip)")
+            out = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                                 capture_output=True, text=True, timeout=15).stdout.strip()
+            iface, _, ip = out.partition("|")
+            # имя интерфейса xray-sockopt не отдаём (Windows не поддерживает), только IP
+            return (None, ip or None)
         if IS_MAC:
             out = subprocess.run(["route", "-n", "get", "default"],
                                  capture_output=True, text=True, timeout=5).stdout
@@ -85,7 +104,7 @@ def default_iface():
 
 def curl(url, timeout=10, iface_ip=None, via_socks=None, want_code=None):
     """curl с явным управлением прокси/интерфейсом. Возвращает (ok, http_code, elapsed)."""
-    cmd = [CFG["CURL_BIN"], "-sS", "-o", "/dev/null",
+    cmd = [CFG["CURL_BIN"], "-sS", "-o", ("NUL" if IS_WINDOWS else "/dev/null"),
            "-w", "%{http_code} %{time_total}",
            "--max-time", str(timeout)]
     if via_socks:
@@ -354,7 +373,8 @@ def build_config(nodes, iface):
     ]
 
     direct = {"tag": "direct-out", "protocol": "freedom",
-              "streamSettings": {"sockopt": {"interface": iface}} if iface else {}}
+              "streamSettings": {"sockopt": {"interface": iface}}
+              if iface and not IS_WINDOWS else {}}  # Windows: sockopt.interface не поддерживается
     outbounds = [direct] + [n["outbound"] for n in nodes]
 
     rules = [
@@ -449,7 +469,10 @@ def main():
     os.makedirs(CFG["STATUS_DIR"], exist_ok=True)
     lock = open(os.path.join(CFG["STATUS_DIR"], "run.lock"), "w")
     try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if fcntl is not None:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        else:
+            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
     except OSError:
         LOG("[WARN] другая копия уже работает — выходим")
         return 0

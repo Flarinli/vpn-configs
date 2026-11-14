@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Обновляет versions.env: закреплённые версии sing-box и xray и sha256 их
-# релизных архивов для {linux,darwin}×{amd64,arm64}. install.sh ставит только
-# то, что совпало с этими суммами.
+# Обновляет versions.env: закреплённые версии sing-box, xray и WinSW и sha256 их
+# релизных архивов для {linux,darwin,windows}×{amd64,arm64}. install.sh ставит
+# только то, что совпало с этими суммами.
 #
 #   tools/update-versions.sh                       # пересчитать суммы для текущих версий
 #   tools/update-versions.sh 1.12.25 26.9.9        # сменить версии (sing-box, xray)
@@ -32,8 +32,13 @@ sha256_of() {
   echo "SINGBOX_VERSION=$SINGBOX_VERSION"
   echo "XRAY_VERSION=$XRAY_VERSION"
   echo "UV_PYTHON_VERSION=$UV_PYTHON_VERSION"
+  echo "WINSW_VERSION=$WINSW_VERSION"
+  url="$(winsw_url)"
+  echo "  $url" >&2
+  curl -fsSL --retry 3 -o "$WORK/winsw" "$url"
+  echo "SHA256_winsw_windows_amd64=$(sha256_of "$WORK/winsw")"
   for tool in singbox xray; do
-    for os in linux darwin; do
+    for os in linux darwin windows; do
       for arch in amd64 arm64; do
         url=$("${tool}_url" "$os" "$arch")
         echo "  $url" >&2

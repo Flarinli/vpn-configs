@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # vpn-split — установщик сплит-VPN (sing-box TUN + xray + vpn-autoselect)
-# для Linux (systemd) и macOS (launchd), amd64/arm64.
+# для Linux (systemd), macOS (launchd) и Windows (Git Bash + WinSW + планировщик), amd64/arm64.
 #
 #   sudo ./install.sh [install] [опции]    установить или обновить (повторный запуск безопасен)
 #   sudo ./install.sh deps [--check-only]  проверить и доустановить зависимости
 #   sudo ./install.sh uninstall [--purge]  удалить (--purge — вместе с настройками и состоянием)
 #   ./install.sh status                    состояние служб и текущий узел
+#
+# Windows: запускать из Git Bash «от имени администратора». Службы — WinSW
+# (vpn-split-tun, vpn-split-xray, автостарт), расписание — задачи планировщика
+# (vpn-split-autoselect каждые 10 минут от SYSTEM; vpn-split-update раз в час).
+# Python при отсутствии ставится через winget.
 #
 # Если установка запущена из git-клона, ставится и таймер автообновления
 # (vpn-split-update, раз в час): он подтягивает main клона и при новом коммите
@@ -16,6 +21,7 @@
 #   --check-only     (deps) только отчёт; код возврата ≠0, если чего-то не хватает
 #   --no-start       разложить файлы, но не запускать службы
 #   --python=MODE    auto (по умолчанию) | system | uv — откуда брать Python ≥ 3.8
+#                    (на Windows: auto|system, Python через winget)
 #   --migrate-xray   Linux: отключить старые xray.service и vpn-autoselect (порт 20808)
 #   --purge          (uninstall) удалить также настройки, состояние и логи
 #   -y, --yes        не задавать вопросов
@@ -24,8 +30,10 @@
 #   VPN_SPLIT_SUB_URL      URL подписки для нового vpn-split.conf
 #   PREFIX SYSCONFDIR STATEDIR LOGDIR BINDIR SBINDIR — раскладка, по умолчанию
 #                          /opt/vpn-split /etc/vpn-split /var/lib/vpn-split /var/log/vpn-split
-#                          /usr/local/bin /usr/local/sbin (macOS: /usr/local/bin)
-#   DESTDIR                поэтапная установка в каталог (службы не трогаются)
+#                          /usr/local/bin /usr/local/sbin (macOS: /usr/local/bin;
+#                          Windows: C:/Program Files/vpn-split, C:/ProgramData/vpn-split/{etc,lib,log})
+#   DESTDIR                поэтапная установка в каталог (службы не трогаются);
+#                          на Windows с DESTDIR задавайте POSIX-префикс: PREFIX=/opt/vpn-split
 #
 # Скрипт совместим с bash 3.2 (системный bash macOS).
 set -euo pipefail
@@ -50,6 +58,7 @@ mkd() { local d; for d in "$@"; do [[ -d $d ]] || install -d -m 755 "$d"; done; 
 case "$(uname -s)" in
   Linux)  OS=linux ;;
   Darwin) OS=darwin ;;
+  MINGW*|MSYS*|CYGWIN*) OS=windows ;;   # Git Bash / MSYS2
   *) die "неподдерживаемая ОС: $(uname -s)" ;;
 esac
 case "$(uname -m)" in
@@ -60,12 +69,32 @@ esac
 
 # ---------------------------------------------------------------- раскладка ---
 DESTDIR="${DESTDIR:-}"
-PREFIX="${PREFIX:-/opt/vpn-split}"
-SYSCONFDIR="${SYSCONFDIR:-/etc/vpn-split}"
-STATEDIR="${STATEDIR:-/var/lib/vpn-split}"
-LOGDIR="${LOGDIR:-/var/log/vpn-split}"
-BINDIR="${BINDIR:-/usr/local/bin}"
-if [[ $OS == darwin ]]; then SBINDIR="${SBINDIR:-/usr/local/bin}"; else SBINDIR="${SBINDIR:-/usr/local/sbin}"; fi
+if [[ $OS == windows ]]; then
+  if [[ -n $DESTDIR ]]; then
+    # поэтапная установка: "$D$PREFIX" склеивается — все пути POSIX-формы
+    PREFIX="${PREFIX:-/opt/vpn-split}"
+    SYSCONFDIR="${SYSCONFDIR:-/etc/vpn-split}"
+    STATEDIR="${STATEDIR:-/var/lib/vpn-split}"
+    LOGDIR="${LOGDIR:-/var/log/vpn-split}"
+    [[ $PREFIX == [A-Za-z]:* || $SYSCONFDIR == [A-Za-z]:* || $STATEDIR == [A-Za-z]:* ]] \
+      && die "с DESTDIR на Windows задайте POSIX-пути: PREFIX=/opt/vpn-split SYSCONFDIR=…"
+  else
+    # пути в POSIX/MSYS-форме: с ними работают и утилиты Git Bash, и Python;
+    # в файлы Windows (cmd/xml/ps1) они попадают через winpath (обратно-слэш)
+    PREFIX="${PREFIX:-C:/Program Files/vpn-split}"
+    SYSCONFDIR="${SYSCONFDIR:-C:/ProgramData/vpn-split/etc}"
+    STATEDIR="${STATEDIR:-C:/ProgramData/vpn-split/lib}"
+    LOGDIR="${LOGDIR:-C:/ProgramData/vpn-split/log}"
+  fi
+  BINDIR="${BINDIR:-$PREFIX/bin}"; SBINDIR="${SBINDIR:-$PREFIX/bin}"
+else
+  PREFIX="${PREFIX:-/opt/vpn-split}"
+  SYSCONFDIR="${SYSCONFDIR:-/etc/vpn-split}"
+  STATEDIR="${STATEDIR:-/var/lib/vpn-split}"
+  LOGDIR="${LOGDIR:-/var/log/vpn-split}"
+  BINDIR="${BINDIR:-/usr/local/bin}"
+  if [[ $OS == darwin ]]; then SBINDIR="${SBINDIR:-/usr/local/bin}"; else SBINDIR="${SBINDIR:-/usr/local/sbin}"; fi
+fi
 BACKUP_DIR="${BACKUP_DIR:-/var/backups}"
 SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
 LAUNCHD_DIR="${LAUNCHD_DIR:-/Library/LaunchDaemons}"
@@ -74,6 +103,14 @@ UNIT_PREFIX="${UNIT_PREFIX:-vpn-split}"
 LABEL_PREFIX="${LABEL_PREFIX:-io.github.flarinli.vpn-split}"
 SERVICES="xray autoselect tun"   # порядок запуска
 D="$DESTDIR"
+
+# -------------------------------------------------------- Windows helpers ---
+winpath() {  # путь в Windows-форму (C:\…) — для cmd/xml/ps1 и задач планировщика
+  [[ $OS == windows ]] && cygpath -w "$1" || printf '%s' "$1"
+}
+native() {  # запуск команды Windows без преобразования MSYS-путей (/Delete и т.п.)
+  MSYS2_ARG_CONV_EXCL='*' "$@"
+}
 
 # ------------------------------------------------------------------ опции ---
 CMD=install
@@ -93,13 +130,19 @@ for a in ${1+"$@"}; do
   esac
 done
 case "$PY_MODE" in auto|system|uv) ;; *) die "--python: auto | system | uv" ;; esac
+[[ $OS == windows && $PY_MODE == uv ]] && die "--python=uv на Windows не поддерживается (auto|system)"
 [[ -n $D ]] && NO_START=1   # поэтапная установка никогда не трогает службы хоста
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 need_root() {
-  [[ $EUID -eq 0 || -n $D ]] || die "нужны права root: sudo $0 $*"
+  if [[ $OS == windows ]]; then
+    [[ -n $D ]] || net session >/dev/null 2>&1 \
+      || die "нужны права администратора: запустите Git Bash «от имени администратора»"
+  else
+    [[ $EUID -eq 0 || -n $D ]] || die "нужны права root: sudo $0 $*"
+  fi
 }
 interactive() { [[ -t 0 && $ASSUME_YES -eq 0 ]]; }
 confirm() {  # confirm "вопрос" -> 0 = да
@@ -114,7 +157,9 @@ safe_rm() {  # rm -rf только для «наших» путей, никог�
   local p
   for p in "$@"; do
     case "${p%/}" in
-      ""|/|/usr|/usr/local|/usr/local/bin|/etc|/var|/var/lib|/var/log|/opt|/Library|"$D") die "отказ удалять $p" ;;
+      ""|/|/usr|/usr/local|/usr/local/bin|/etc|/var|/var/lib|/var/log|/opt|/Library|"$D"|\
+      "C:"|"/c"|"C:/Program Files"|"/c/Program Files"|"C:/ProgramData"|"/c/ProgramData"|\
+      "C:/Windows"|"/c/Windows"|"C:/Users"|"/c/Users") die "отказ удалять $p" ;;
     esac
     rm -rf "$p"
   done
@@ -126,6 +171,7 @@ PM=""
 BREW=""
 detect_pm() {
   if [[ $OS == darwin ]]; then PM=brew; return; fi
+  if [[ $OS == windows ]]; then PM=""; return; fi   # Python — через winget напрямую
   local pm
   for pm in apt-get dnf yum pacman zypper apk; do
     if have "$pm"; then PM=$pm; return; fi
@@ -187,6 +233,13 @@ pm_install() {
 
 ca_ok() {
   local f
+  if [[ $OS == windows ]]; then
+    for f in /mingw64/etc/ssl/certs/ca-bundle.crt /mingw32/etc/ssl/certs/ca-bundle.crt \
+             /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem; do
+      [[ -s $f ]] && return 0
+    done
+    return 1
+  fi
   for f in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt \
            /etc/ssl/ca-bundle.pem /etc/ssl/cert.pem; do
     [[ -s $f ]] && return 0
@@ -199,6 +252,20 @@ PYTHON=""; PY=""
 py_ok() { "$1" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' >/dev/null 2>&1; }
 find_system_python() {
   local c p
+  if [[ $OS == windows ]]; then
+    for c in ${PYTHON_BIN:-} python python3; do
+      p="$(command -v "$c" 2>/dev/null)" || continue
+      py_ok "$p" || continue
+      # абсолютный Windows-путь реального интерпретатора (не заглушка PATH)
+      p="$("$p" -c 'import os, sys; print(os.path.realpath(sys.executable))' 2>/dev/null)" || continue
+      PYTHON=$p; PY=$p; return 0
+    done
+    for p in "$LOCALAPPDATA/Programs/Python"/Python3*/python.exe; do
+      [[ -f $p ]] || continue
+      if py_ok "$p"; then PYTHON=$p; PY=$p; return 0; fi
+    done
+    return 1
+  fi
   for c in ${PYTHON_BIN:-} python3 python3.13 python3.12 python3.11 python3.10 python3.9 python3.8; do
     p="$(command -v "$c" 2>/dev/null)" || continue
     # macOS без Command Line Tools: /usr/bin/python3 — заглушка, открывающая диалог установки
@@ -210,6 +277,14 @@ find_system_python() {
     if [[ -x $p ]] && py_ok "$p"; then PYTHON=$p; PY=$p; return 0; fi
   fi
   return 1
+}
+
+win_install_python() {  # Python для Windows — официальный установщик через winget
+  have winget || die "Python ≥ 3.8 не найден и winget недоступен — установите Python с python.org и повторите"
+  log "установка Python 3.12 через winget"
+  winget install -e --id Python.Python.3.12 --silent --accept-package-agreements \
+    --accept-source-agreements || die "winget не смог установить Python"
+  find_system_python || die "Python установлен, но не найден — откройте новый терминал и повторите"
 }
 find_uv_python() {
   local uv="$D$PREFIX/tools/uv" p
@@ -274,7 +349,11 @@ report() { REPORT="$REPORT$(printf '   %-16s %s' "$1" "$2")"$'\n'; }
 cmd_deps() {
   log "зависимости ($OS/$ARCH)"
   detect_pm
-  info "менеджер пакетов: ${PM:-не найден}"
+  if [[ $OS == windows ]]; then
+    info "менеджер пакетов: winget (только Python)"
+  else
+    info "менеджер пакетов: ${PM:-не найден}"
+  fi
   [[ $PM == apk ]] && warn "Alpine: systemd нет — службы придётся запускать вручную (OpenRC не поддерживается)"
 
   local missing="" dep ok fatal=0
@@ -293,8 +372,8 @@ cmd_deps() {
     if find_system_python || find_uv_python; then report python3 "найдено: $PY"; else missing="$missing python3"; fi
   fi
 
-  # установка недостающего пакетным менеджером
-  if [[ -n $missing && $CHECK_ONLY -eq 0 && $NO_DEPS -eq 0 ]]; then
+  # установка недостающего пакетным менеджером (на Windows — только Python через winget ниже)
+  if [[ -n $missing && $CHECK_ONLY -eq 0 && $NO_DEPS -eq 0 && $OS != windows ]]; then
     need_root deps
     local pkgs="" m
     for m in $missing; do
@@ -325,6 +404,13 @@ cmd_deps() {
     missing=$still
   fi
 
+  # Python на Windows: единственный путь — winget (uv-фолбэк не подходит)
+  if [[ $OS == windows && $missing == *python3* && $CHECK_ONLY -eq 0 && $NO_DEPS -eq 0 ]]; then
+    win_install_python
+    report python3 "установлено: $PY"
+    missing="${missing/python3/}"
+  fi
+
   # Python: системный -> пакетный менеджер (выше) -> uv
   if [[ $PY_MODE == uv || ( $missing == *python3* && $PY_MODE == auto ) ]]; then
     if [[ $CHECK_ONLY -eq 0 && $NO_DEPS -eq 0 ]] && have curl; then
@@ -347,10 +433,16 @@ cmd_deps() {
     if [[ -c /dev/net/tun ]]; then report tun "найдено"
     elif [[ -n $D ]]; then report tun "нет (не важно для DESTDIR)"
     else report tun "ОТСУТСТВУЕТ — /dev/net/tun (modprobe tun)"; fatal=1; fi
-  else
+  elif [[ $OS == darwin ]]; then
     for m in launchctl route ipconfig; do
       if have $m; then report $m "найдено"; else report $m "ОТСУТСТВУЕТ"; fatal=1; fi
     done
+  else
+    for m in powershell schtasks net; do
+      if have $m; then report $m "найдено"; else report $m "ОТСУТСТВУЕТ"; fatal=1; fi
+    done
+    report wintun "входит в архив sing-box (ставится вместе с ним)"
+    report services "WinSW + Планировщик заданий (ставит install.sh)"
   fi
   printf '%s' "$REPORT"
   REPORT=""
@@ -378,16 +470,62 @@ render_template() {  # render_template SRC DST MODE [KEY=VALUE...]
 
 download_verified() {  # URL SHA256 OUT
   [[ -n $2 ]] || die "нет sha256 для $1 в versions.env (tools/update-versions.sh)"
+  # локальный кэш пакетов (VPN_SPLIT_PKG_CACHE): повторные установки не качают заново
+  local cached="" got
+  if [[ -n ${VPN_SPLIT_PKG_CACHE:-} ]]; then
+    cached="$VPN_SPLIT_PKG_CACHE/$(basename "$1")"
+    if [[ -f $cached ]] && { got="$(sha256_of "$cached")"; [[ $got == "$2" ]]; }; then
+      info "из кэша: $cached"
+      cp -f "$cached" "$3"
+      return 0
+    fi
+  fi
   info "скачиваю $1"
   curl -fsSL --retry 3 --connect-timeout 20 -o "$3" "$1" || die "не удалось скачать $1"
-  local got; got="$(sha256_of "$3")"
+  got="$(sha256_of "$3")"
   [[ $got == "$2" ]] || die "sha256 не совпал для $1: $got (ожидался $2)"
+  if [[ -n ${VPN_SPLIT_PKG_CACHE:-} ]]; then
+    mkdir -p "$VPN_SPLIT_PKG_CACHE" && cp -f "$3" "$cached" 2>/dev/null || true
+  fi
 }
 
 install_binaries() {
   log "бинарники sing-box $SINGBOX_VERSION и xray $XRAY_VERSION -> $PREFIX/bin"
   local bin="$D$PREFIX/bin" v
   install -d -m 755 "$bin" "$D$PREFIX/share/xray"
+
+  if [[ $OS == windows ]]; then
+    if [[ -x $bin/sing-box.exe ]] && "$bin/sing-box.exe" version 2>/dev/null | head -1 | grep -q "version $SINGBOX_VERSION\$"; then
+      info "sing-box $SINGBOX_VERSION уже установлен"
+    else
+      v="SHA256_singbox_${OS}_${ARCH}"
+      download_verified "$(singbox_url "$OS" "$ARCH")" "${!v:-}" "$TMP/sing-box.zip"
+      "$PY" -m zipfile -e "$TMP/sing-box.zip" "$TMP/sing-box"
+      install -m 755 "$TMP/sing-box/sing-box-$SINGBOX_VERSION-$OS-$ARCH/sing-box.exe" "$bin/sing-box.exe"
+      if [[ -f $TMP/sing-box/sing-box-$SINGBOX_VERSION-$OS-$ARCH/wintun.dll ]]; then
+        install -m 644 "$TMP/sing-box/sing-box-$SINGBOX_VERSION-$OS-$ARCH/wintun.dll" "$bin/wintun.dll"
+      fi
+      # начиная с sing-box 1.10 wintun встроен в бинарник — отдельный dll не нужен
+    fi
+    if [[ -x $bin/xray.exe && -f $D$PREFIX/share/xray/geoip.dat ]] \
+       && "$bin/xray.exe" version 2>/dev/null | head -1 | grep -q "^Xray $XRAY_VERSION "; then
+      info "xray $XRAY_VERSION уже установлен"
+    else
+      v="SHA256_xray_${OS}_${ARCH}"
+      download_verified "$(xray_url "$OS" "$ARCH")" "${!v:-}" "$TMP/xray.zip"
+      "$PY" -m zipfile -e "$TMP/xray.zip" "$TMP/xray"
+      install -m 755 "$TMP/xray/xray.exe" "$bin/xray.exe"
+      install -m 644 "$TMP/xray/geoip.dat" "$TMP/xray/geosite.dat" "$D$PREFIX/share/xray/"
+    fi
+    # WinSW — хост служб Windows: один exe, копия с именем службы читает xml с тем же именем
+    if [[ ! -x $bin/WinSW-x64.exe ]] || [[ "$(sha256_of "$bin/WinSW-x64.exe")" != "${SHA256_winsw_windows_amd64:-}" ]]; then
+      download_verified "$(winsw_url)" "${SHA256_winsw_windows_amd64:-}" "$TMP/WinSW-x64.exe"
+      install -m 755 "$TMP/WinSW-x64.exe" "$bin/WinSW-x64.exe"
+    fi
+    cp -f "$bin/WinSW-x64.exe" "$bin/vpn-split-tun.exe"
+    cp -f "$bin/WinSW-x64.exe" "$bin/vpn-split-xray.exe"
+    return 0
+  fi
 
   if [[ -x $bin/sing-box ]] && "$bin/sing-box" version 2>/dev/null | head -1 | grep -q "version $SINGBOX_VERSION\$"; then
     info "sing-box $SINGBOX_VERSION уже установлен"
@@ -414,7 +552,13 @@ install_files() {
   log "файлы проекта -> $PREFIX"
   local p="$D$PREFIX" f
   install -d -m 755 "$p/bin" "$p/lib" "$p/libexec" "$p/share/rules"
-  install -m 755 "$REPO/bin/vpn-urls" "$p/bin/vpn-urls"
+  if [[ $OS == windows ]]; then
+    install -m 644 "$REPO/bin/vpn-urls" "$p/bin/vpn-urls.py"
+    render_template "$REPO/init/windows/vpn-urls.cmd.in" "$p/bin/vpn-urls.cmd" 755 \
+      "PYTHON=$(winpath "$PYTHON")" "PREFIX=$(winpath "$PREFIX")"
+  else
+    install -m 755 "$REPO/bin/vpn-urls" "$p/bin/vpn-urls"
+  fi
   install -m 644 "$REPO/lib/vpnsplit.py" "$p/lib/vpnsplit.py"
   for f in vpn-autoselect render-config migrate-legacy vpn-split-update; do
     install -m 755 "$REPO/libexec/$f" "$p/libexec/$f"
@@ -437,12 +581,24 @@ EOF
   chmod 644 "$p/share/layout.env"
 }
 
-# окружение для запуска установленных скриптов относительно DESTDIR
+# окружение для запуска установленных скриптов относительно DESTDIR.
+# На Windows нативному Python нужны пути в форме C:\… — конвертируем MSYS-пути.
 run_py() {
-  VPN_SPLIT_SYSCONFDIR="$D$SYSCONFDIR" VPN_SPLIT_STATEDIR="$D$STATEDIR" \
-    VPN_SPLIT_CONF="$D$SYSCONFDIR/vpn-split.conf" "$PY" "$@"
+  local a args=() pre="$D$PREFIX" sysd="$D$SYSCONFDIR" std="$D$STATEDIR" conf="$D$SYSCONFDIR/vpn-split.conf"
+  if [[ $OS == windows ]]; then
+    pre="$(cygpath -w "$pre")"; sysd="$(cygpath -w "$sysd")"
+    std="$(cygpath -w "$std")"; conf="$(cygpath -w "$conf")"
+    for a in "$@"; do
+      if [[ $a == /* ]]; then a="$(cygpath -w "$a")"; fi
+      args+=("$a")
+    done
+  else
+    args=("$@")
+  fi
+  VPN_SPLIT_SYSCONFDIR="$sysd" VPN_SPLIT_STATEDIR="$std" \
+    VPN_SPLIT_CONF="$conf" "$PY" "${args[@]}"
 }
-conf_get() { "$PY" "$D$PREFIX/lib/vpnsplit.py" get "$D$SYSCONFDIR/vpn-split.conf" "$1"; }
+conf_get() { run_py "$D$PREFIX/lib/vpnsplit.py" get "$D$SYSCONFDIR/vpn-split.conf" "$1"; }
 
 NEW_CONF=0
 setup_config() {
@@ -460,7 +616,7 @@ setup_config() {
   fi
   for kind in proxy direct; do
     [[ -f $D$SYSCONFDIR/domains.$kind ]] && continue
-    run_py -c "import sys; sys.path.insert(0, '$D$PREFIX/lib'); import vpnsplit; vpnsplit.write_domains('$kind', [])"
+    run_py "$D$PREFIX/lib/vpnsplit.py" write-domains "$kind"
   done
 }
 
@@ -496,6 +652,7 @@ legacy_units_linux() {  # юниты старого vpn-autoselect/xray, най�
 }
 
 migrate_legacy() {
+  [[ $OS == windows ]] && return 0   # на Windows старых установок не было
   local old_sb="/usr/local/etc/singbox-tun/config.json" old_as units="" remove="" keep="" p
   if [[ $OS == darwin ]]; then old_as=/usr/local/etc/vpn-autoselect.conf; else old_as=/etc/vpn-autoselect.conf; fi
   [[ $OS == linux ]] && units="$(legacy_units_linux | tr '\n' ' ')"
@@ -563,6 +720,10 @@ migrate_legacy() {
 }
 
 install_wrappers() {
+  if [[ $OS == windows ]]; then
+    info "команды: $PREFIX\\bin\\vpn-urls.cmd (запуск из консоли с правами администратора)"
+    return 0
+  fi
   log "команды: $BINDIR/vpn-urls, $SBINDIR/vpn-autoselect"
   mkd "$D$BINDIR" "$D$SBINDIR"
   render_template "$REPO/init/wrapper.in" "$D$BINDIR/vpn-urls" 755 "TARGET=$PREFIX/bin/vpn-urls"
@@ -578,6 +739,37 @@ install_wrappers() {
 
 install_units() {
   local s
+  if [[ $OS == windows ]]; then
+    log "службы Windows (WinSW) и задачи планировщика -> $PREFIX"
+    render_template "$REPO/init/windows/tun.cmd.in" "$D$PREFIX/bin/tun.cmd" 755 \
+      "PYTHON=$(winpath "$PYTHON")" "PREFIX=$(winpath "$PREFIX")" "STATEDIR=$(winpath "$STATEDIR")"
+    render_template "$REPO/init/windows/tun.xml.in" "$D$PREFIX/bin/vpn-split-tun.xml" 644 \
+      "PREFIX=$(winpath "$PREFIX")" "LOGDIR=$(winpath "$LOGDIR")"
+    render_template "$REPO/init/windows/xray.xml.in" "$D$PREFIX/bin/vpn-split-xray.xml" 644 \
+      "PREFIX=$(winpath "$PREFIX")" "STATEDIR=$(winpath "$STATEDIR")" "LOGDIR=$(winpath "$LOGDIR")"
+    [[ -n $D ]] && { info "DESTDIR: службы и задачи не ставятся"; return 0; }
+    # WinSW: создать службы (читают xml рядом с exe), старт — в start_services
+    "$PREFIX/bin/vpn-split-tun.exe" install >/dev/null \
+      || die "не удалось создать службу vpn-split-tun (нужны права администратора)"
+    "$PREFIX/bin/vpn-split-xray.exe" install >/dev/null \
+      || die "не удалось создать службу vpn-split-xray (нужны права администратора)"
+    info "службы созданы: $UNIT_PREFIX-tun, $UNIT_PREFIX-xray (автостарт)"
+    # задачи: autoselect — всегда; update — только для git-клона
+    local ps1="$PREFIX/share/register-tasks.ps1"
+    if auto_update; then
+      render_template "$REPO/init/windows/register-tasks.ps1.in" "$ps1" 644 \
+        "PYTHON=$(winpath "$PYTHON")" "PREFIX=$(winpath "$PREFIX")" \
+        "OWNER=$(whoami)" \
+        "SRC_DIR=$(winpath "$REPO")" "GITBASH=$(winpath "$(command -v bash)")"
+    else
+      render_template "$REPO/init/windows/register-tasks.ps1.in" "$ps1" 644 \
+        "PYTHON=$(winpath "$PYTHON")" "PREFIX=$(winpath "$PREFIX")" \
+        "OWNER=" "SRC_DIR=" "GITBASH="
+      native schtasks /Delete /TN "$UNIT_PREFIX-update" /F >/dev/null 2>&1 || true
+    fi
+    powershell -NoProfile -ExecutionPolicy Bypass -File "$(winpath "$ps1")"
+    return 0
+  fi
   if [[ $OS == linux ]]; then
     log "systemd-юниты -> $SYSTEMD_DIR"
     mkd "$D$SYSTEMD_DIR"
@@ -683,7 +875,7 @@ start_services() {
       [[ -f $SYSTEMD_DIR/$UNIT_PREFIX-$s ]] || continue
       info "$(printf '%-28s %s' "$UNIT_PREFIX-$s" "$(systemctl is-active "$UNIT_PREFIX-$s" || true)")"
     done
-  else
+  elif [[ $OS == darwin ]]; then
     for s in $SERVICES; do launchd_load "$s"; done
     # из самого vpn-split-update не перезагружаем: bootout убил бы текущий запуск
     if auto_update && [[ -z ${VPN_SPLIT_SELF_UPDATE:-} ]]; then launchd_load update; fi
@@ -692,6 +884,11 @@ start_services() {
       [[ -f $LAUNCHD_DIR/$LABEL_PREFIX.$s.plist ]] || continue
       info "$LABEL_PREFIX.$s: $(launchctl print "system/$LABEL_PREFIX.$s" 2>/dev/null | awk '/^\tstate =/{print $3; exit}')"
     done
+  else
+    "$PREFIX/bin/vpn-split-xray.exe" start >/dev/null || warn "vpn-split-xray не запустился"
+    "$PREFIX/bin/vpn-split-tun.exe" start >/dev/null || warn "vpn-split-tun не запустился"
+    sleep 3
+    powershell -NoProfile -Command 'Get-Service vpn-split-xray, vpn-split-tun | Format-Table Name, Status -AutoSize'
   fi
 }
 
@@ -699,11 +896,18 @@ cmd_install() {
   need_root install
   [[ -n $D ]] && info "поэтапная установка в DESTDIR=$D"
   if [[ $NO_DEPS -eq 1 ]]; then
-    find_system_python || find_uv_python || die "Python ≥ 3.8 не найден (уберите --no-deps)"
+    if [[ $OS == windows ]]; then
+      find_system_python || die "Python ≥ 3.8 не найден (уберите --no-deps)"
+    else
+      find_system_python || find_uv_python || die "Python ≥ 3.8 не найден (уберите --no-deps)"
+    fi
   else
     cmd_deps
   fi
   [[ -n $PY ]] || die "Python ≥ 3.8 не найден"
+  # в файлы Windows (юниты, задачи) путь идёт в форме C:\…; для скриптов самого
+  # установщика остаётся $PY в POSIX-форме
+  PYTHON="$(winpath "$PY")"
   install_files
   install_binaries
   setup_config
@@ -713,7 +917,22 @@ cmd_install() {
   install_units
   start_services
   record_source_rev
-  cat <<EOF
+  if [[ $OS == windows ]]; then
+    cat <<EOF
+
+Готово: vpn-split $VPN_SPLIT_VERSION ($OS/$ARCH, Python: $PYTHON)
+  настройки:   $SYSCONFDIR/vpn-split.conf, domains.proxy, domains.direct
+  состояние:   $STATEDIR/status.json (текущие узлы)
+  службы:      vpn-split-tun, vpn-split-xray (автостарт); задачи vpn-split-autoselect (10 мин)
+  свои домены: vpn-urls.cmd add example.com  (консоль от имени администратора)
+               список: vpn-urls.cmd list; добавить $PREFIX\\bin в PATH при желании
+  статус:      $0 status   логи: $LOGDIR\\tun.log, $LOGDIR\\xray.log (WinSW)
+  обновления:  $(auto_update && echo "автоматически из $REPO (задача vpn-split-update, раз в час)" || echo "вручную: git pull && $0")
+  проверка:    curl --noproxy '*' -s https://api.ipify.org          # RU IP = остальное напрямую
+               curl --noproxy '*' -sI https://www.instagram.com/    # 200 = заблокированное через VPN
+EOF
+  else
+    cat <<EOF
 
 Готово: vpn-split $VPN_SPLIT_VERSION ($OS/$ARCH, Python: $PYTHON)
   настройки:   $SYSCONFDIR/vpn-split.conf, domains.proxy, domains.direct
@@ -724,13 +943,25 @@ cmd_install() {
   проверка:    curl --noproxy '*' -s https://api.ipify.org          # RU IP = остальное напрямую
                curl --noproxy '*' -sI https://www.instagram.com/    # 200 = заблокированное через VPN
 EOF
+  fi
 }
 
 cmd_uninstall() {
   need_root uninstall
   log "удаление vpn-split"
   local s f
-  if [[ $OS == linux ]]; then
+  if [[ $OS == windows ]]; then
+    for s in tun xray; do
+      if [[ -x $D$PREFIX/bin/vpn-split-$s.exe ]]; then
+        "$D$PREFIX/bin/vpn-split-$s.exe" stop >/dev/null 2>&1 || true
+        "$D$PREFIX/bin/vpn-split-$s.exe" uninstall >/dev/null 2>&1 || true
+      fi
+    done
+    for s in autoselect update; do
+      native schtasks /Delete /TN "$UNIT_PREFIX-$s" /F >/dev/null 2>&1 || true
+    done
+    info "службы и задачи удалены"
+  elif [[ $OS == linux ]]; then
     if [[ $NO_START -eq 0 ]]; then
       systemctl disable --now "$UNIT_PREFIX-tun.service" "$UNIT_PREFIX-autoselect.timer" \
         "$UNIT_PREFIX-autoselect.service" "$UNIT_PREFIX-xray.service" \
@@ -762,7 +993,11 @@ cmd_uninstall() {
 
 cmd_status() {
   local s
-  if [[ $OS == linux ]]; then
+  if [[ $OS == windows ]]; then
+    powershell -NoProfile -Command 'Get-Service vpn-split-tun, vpn-split-xray | Format-Table Name, Status -AutoSize'
+    MSYS_NO_PATHCONV=1 schtasks /Query /FO CSV 2>/dev/null | grep -i "vpn-split" || true
+    info "логи: $LOGDIR\\tun.log, $LOGDIR\\xray.log"
+  elif [[ $OS == linux ]]; then
     for s in xray.service autoselect.timer tun.service update.timer; do
       printf '%-28s %s\n' "$UNIT_PREFIX-$s" "$(systemctl is-active "$UNIT_PREFIX-$s" 2>/dev/null || true)"
     done

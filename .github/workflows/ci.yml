@@ -16,9 +16,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -39,5 +39,5 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-      # все 8 архивов {sing-box,xray}×{linux,darwin}×{amd64,arm64}, не только раннеры CI
+      # все архивы {sing-box,xray}×{linux,darwin,windows}×{amd64,arm64} + WinSW, не только раннеры CI
       - run: tools/update-versions.sh --check

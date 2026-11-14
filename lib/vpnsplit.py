@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 vpnsplit — общий модуль vpn-split: раскладка путей, настройки, списки доменов,
-сборка конфига sing-box и управление службами (systemd / launchd).
+сборка конфига sing-box и управление службами (systemd / launchd / Windows).
 
 Ни одного жёстко прописанного пути к установке здесь нет:
   * PREFIX вычисляется от расположения самого модуля ($PREFIX/lib/vpnsplit.py);
@@ -12,6 +12,7 @@ vpnsplit — общий модуль vpn-split: раскладка путей, �
 Без аргументов модуль не запускается; CLI для install.sh:
   python3 vpnsplit.py set-conf FILE KEY=VALUE...   # правка KEY=VALUE с сохранением комментариев
   python3 vpnsplit.py get FILE KEY                 # значение ключа (для shell)
+  python3 vpnsplit.py write-domains KIND [D...]    # записать domains.KIND (пусто — только шапка)
 """
 
 import json
@@ -22,18 +23,30 @@ import sys
 import tempfile
 
 IS_MAC = sys.platform == "darwin"
-OS_NAME = "darwin" if IS_MAC else "linux"
+IS_WINDOWS = sys.platform == "win32"
+OS_NAME = "darwin" if IS_MAC else ("windows" if IS_WINDOWS else "linux")
 
 # ------------------------------------------------------------------ layout ---
 
 PREFIX = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+if IS_WINDOWS:
+    _LAYOUT_OS = {
+        "SYSCONFDIR": "C:/ProgramData/vpn-split/etc",
+        "STATEDIR": "C:/ProgramData/vpn-split/lib",
+        "LOGDIR": "C:/ProgramData/vpn-split/log",
+    }
+else:
+    _LAYOUT_OS = {
+        "SYSCONFDIR": "/etc/vpn-split",
+        "STATEDIR": "/var/lib/vpn-split",
+        "LOGDIR": "/var/log/vpn-split",
+    }
+
 LAYOUT_DEFAULTS = {
     "PREFIX": PREFIX,
-    "SYSCONFDIR": "/etc/vpn-split",
-    "STATEDIR": "/var/lib/vpn-split",
-    "LOGDIR": "/var/log/vpn-split",
-    "UNIT_PREFIX": "vpn-split",                    # systemd: vpn-split-<svc>.service
+    **_LAYOUT_OS,
+    "UNIT_PREFIX": "vpn-split",                    # systemd/WinSW: vpn-split-<svc>
     "LABEL_PREFIX": "io.github.flarinli.vpn-split",  # launchd: <prefix>.<svc>
 }
 
@@ -78,6 +91,7 @@ def conf_path():
 
 def default_settings():
     p, st = LAYOUT["PREFIX"], LAYOUT["STATEDIR"]
+    exe = ".exe" if IS_WINDOWS else ""
     return {
         # подписка
         "SUB_URL": "",
@@ -107,8 +121,8 @@ def default_settings():
         "DIRECT_DOMAINS": "",
         "LOG_LEVEL": "info",
         # пути (по умолчанию выводятся из раскладки, переопределять обычно не нужно)
-        "SINGBOX_BIN": os.path.join(p, "bin", "sing-box"),
-        "XRAY_BIN": os.path.join(p, "bin", "xray"),
+        "SINGBOX_BIN": os.path.join(p, "bin", "sing-box" + exe),
+        "XRAY_BIN": os.path.join(p, "bin", "xray" + exe),
         "XRAY_ASSET_DIR": os.path.join(p, "share", "xray"),
         "RULES_DIR": os.path.join(p, "share", "rules"),
         "SINGBOX_TEMPLATE": os.path.join(p, "share", "singbox.json.tmpl"),
@@ -268,7 +282,13 @@ def render_singbox(cfg, os_name=OS_NAME, iface=None, extra_proxy=None, extra_dir
     for rs in route["rule_set"]:
         rs["path"] = os.path.join(cfg["RULES_DIR"], rs["tag"] + ".srs")
 
-    if os_name == "linux":
+    if os_name == "windows":
+        route["auto_detect_interface"] = True
+        # на Windows имя процесса содержит .exe — матчатся оба варианта
+        for r in rules:
+            if "process_name" in r:
+                r["process_name"] = ["xray", "xray.exe", "sing-box", "sing-box.exe"]
+    elif os_name == "linux":
         want = cfg["DEFAULT_IFACE"]
         if want.lower() == "auto":
             want = iface or default_route_iface()
@@ -312,12 +332,17 @@ def service_id(name):
     """name: tun | xray | autoselect."""
     if IS_MAC:
         return "%s.%s" % (LAYOUT["LABEL_PREFIX"], name)
+    if IS_WINDOWS:
+        return "%s-%s" % (LAYOUT["UNIT_PREFIX"], name)   # имя службы Windows
     return "%s-%s.service" % (LAYOUT["UNIT_PREFIX"], name)
 
 
 def restart_service(name):
     if IS_MAC:
         cmd = ["launchctl", "kickstart", "-k", "system/" + service_id(name)]
+    elif IS_WINDOWS:
+        cmd = ["powershell", "-NoProfile", "-Command",
+               "Restart-Service -Name '%s' -Force" % service_id(name)]
     else:
         cmd = ["systemctl", "restart", service_id(name)]
     return subprocess.run(cmd, capture_output=True, text=True, timeout=60)
@@ -330,8 +355,11 @@ def _cli(argv):
         values = dict(a.split("=", 1) for a in argv[2:])
         set_conf_values(argv[1], values)
         return 0
-    if len(argv) == 3 and argv[0] == "get":
+    if len(argv) >= 3 and argv[0] == "get":
         print(parse_kv(argv[1]).get(argv[2], "") if os.path.exists(argv[1]) else "")
+        return 0
+    if len(argv) >= 2 and argv[0] == "write-domains":
+        write_domains(argv[1], list(argv[2:]))
         return 0
     print(__doc__, file=sys.stderr)
     return 2

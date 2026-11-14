@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- vpn-split: служба Windows для sing-box TUN (генерирует install.sh из init/windows/tun.xml.in) -->
+<service>
+  <id>@UNIT_PREFIX@-tun</id>
+  <name>vpn-split tun</name>
+  <description>vpn-split: sing-box split-TUN (ru-blocked via xray, rest direct)</description>
+  <executable>cmd.exe</executable>
+  <arguments>/d /c "@PREFIX@\bin\tun.cmd"</arguments>
+  <startmode>Automatic</startmode>
+  <onfailure mode="restart" delay="5000"/>
+  <stoptimeout>15 sec</stoptimeout>
+  <logpath>@LOGDIR@</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>4</keepFiles>
+  </log>
+</service>

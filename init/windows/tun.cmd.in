@@ -1,0 +1,5 @@
+@echo off
+rem vpn-split: TUN-служба Windows - при каждом старте пересобрать конфиг и запустить sing-box.
+rem Генерирует install.sh из init/windows/tun.cmd.in (@PYTHON@ @PREFIX@ @STATEDIR@).
+"@PYTHON@" "@PREFIX@\libexec\render-config" || exit /b 1
+"@PREFIX@\bin\sing-box.exe" run -c "@STATEDIR@\singbox.json"
