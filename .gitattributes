@@ -1,0 +1,16 @@
+# Текстовые файлы — LF (скрипты запускаются bash под Git Bash, где CRLF ломает shebang).
+* text=auto eol=lf
+
+# Файлы для cmd.exe — CRLF (батники с LF ненадёжны).
+*.cmd text eol=crlf
+*.cmd.in text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.ps1.in text eol=crlf
+
+# Бинарные артефакты — не конвертировать.
+*.srs binary
+*.dat binary
+*.zip binary
+*.tar.gz binary
+*.exe binary
