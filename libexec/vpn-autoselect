@@ -107,9 +107,6 @@ def default_iface():
 
 
 def tunnel_exit_country(via_socks, timeout=10):
-
-
-def tunnel_exit_country(via_socks, timeout=10):
     """Страна выхода через туннель — поле loc= из cdn-cgi/trace TEST_URL.
     Возвращает (код_страны|"None", elapsed). None = туннель не отвечает.
     В отличие от http-кода это отличает живые ноды от утечки в direct-out
