@@ -102,28 +102,34 @@ def default_iface():
     return None, None
 
 
-def curl(url, timeout=10, iface_ip=None, via_socks=None, want_code=None):
-    """curl с явным управлением прокси/интерфейсом. Возвращает (ok, http_code, elapsed)."""
-    cmd = [CFG["CURL_BIN"], "-sS", "-o", ("NUL" if IS_WINDOWS else "/dev/null"),
-           "-w", "%{http_code} %{time_total}",
-           "--max-time", str(timeout)]
+# (curl() удалён: единственный честный health-check — страна выхода,
+#  см. tunnel_exit_country; коды HTTP не отличают утечку в direct-out)
+
+
+def tunnel_exit_country(via_socks, timeout=10):
+
+
+def tunnel_exit_country(via_socks, timeout=10):
+    """Страна выхода через туннель — поле loc= из cdn-cgi/trace TEST_URL.
+    Возвращает (код_страны|"None", elapsed). None = туннель не отвечает.
+    В отличие от http-кода это отличает живые ноды от утечки в direct-out
+    на любых сетях, включая те, где «заблокированное» открыто напрямую."""
+    cmd = [CFG["CURL_BIN"], "-sS", "--max-time", str(timeout)]
     if via_socks:
         cmd += ["--proxy", "socks5h://%s" % via_socks]
     else:
         cmd += ["--noproxy", "*"]
-    if iface_ip:
-        cmd += ["--interface", iface_ip]
-    cmd.append(url)
+    cmd.append(CFG["TEST_URL"])
+    t0 = time.time()
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
-        code, _, t = (r.stdout.partition(" ") + ("", "", ""))[0], "", r.stdout.partition(" ")[2]
-        parts = r.stdout.split()
-        code = parts[0] if parts else "000"
-        elapsed = parts[1] if len(parts) > 1 else "?"
-        ok = r.returncode == 0 and (want_code is None or code == want_code)
-        return ok, code, elapsed
+        if r.returncode == 0:
+            for line in r.stdout.splitlines():
+                if line.startswith("loc="):
+                    return line[4:].strip(), "%.1f" % (time.time() - t0)
     except Exception:
-        return False, "000", "?"
+        pass
+    return None, "%.1f" % (time.time() - t0)
 
 
 CFG = vpnsplit.default_settings()  # заполнится в main()
@@ -497,8 +503,11 @@ def main():
     sub_meta = os.path.join(CFG["STATUS_DIR"], "sub.json")
 
     # --- 1. быстрый health-check текущего туннеля ------------------------------
-    healthy, code, t = curl(CFG["TEST_URL"], timeout=8, via_socks=socks, want_code="204")
-    LOG("[i] туннель %s: http=%s (%ss)" % ("ЖИВ" if healthy else "не работает", code, t))
+    bad = [c.strip().upper() for c in CFG["TEST_BAD_COUNTRIES"].split(",") if c.strip()]
+    country, t = tunnel_exit_country(socks, timeout=8)
+    healthy = country is not None and country not in bad
+    LOG("[i] туннель %s: выход=%s (%ss)" % ("ЖИВ" if healthy else "не работает",
+                                            country or "-", t))
 
     if healthy and not args.force:
         # туннель жив — нужен ли refresh подписки?
@@ -644,26 +653,26 @@ def main():
     restart_xray()
     time.sleep(1.5)
 
-    ok2, code2, t2 = curl(CFG["TEST_URL"], timeout=10, via_socks=socks, want_code="204")
+    country, t = tunnel_exit_country(socks, timeout=10)
     attempt = 1
-    while not ok2 and attempt < 3:
+    while (country is None or country in bad) and attempt < 3:
         time.sleep(3)
-        ok2, code2, t2 = curl(CFG["TEST_URL"], timeout=10, via_socks=socks, want_code="204")
+        country, t = tunnel_exit_country(socks, timeout=10)
         attempt += 1
 
-    if ok2:
-        LOG("[ok] xray перезапущен, туннель работает (http=%s, %ss)" % (code2, t2))
+    if country is not None and country not in bad:
+        LOG("[ok] xray перезапущен, туннель работает (выход=%s, %ss)" % (country, t))
         write_status(True, "applied", top)
         return 0
 
     # откат
-    LOG("[ERR] туннель после применения не работает (http=%s) — откат" % code2)
+    LOG("[ERR] туннель после применения не работает (выход=%s) — откат" % (country or "-"))
     if os.path.exists(backup):
         shutil.copy2(backup, CFG["XRAY_CONF"])
         restart_xray()
         time.sleep(1.5)
-        ok3, code3, _ = curl(CFG["TEST_URL"], timeout=10, via_socks=socks, want_code="204")
-        LOG("[i] после отката: http=%s" % code3)
+        country, _ = tunnel_exit_country(socks, timeout=10)
+        LOG("[i] после отката: выход=%s" % (country or "-"))
     write_status(False, "rollback", top)
     return 1
 

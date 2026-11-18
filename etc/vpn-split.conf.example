@@ -26,7 +26,7 @@ EXCLUDE_NAMES=LTE|Россия|Автовыбор
 # --- Выбор узла -------------------------------------------------------------
 # Проверка туннеля через SOCKS (должен отдавать 204) и пробник leastPing —
 # лучше запрещённый ресурс, иначе выберется нода, где он не открывается.
-#TEST_URL=https://www.youtube.com/generate_204
+#TEST_URL=https://www.cloudflare.com/cdn-cgi/trace  (autoselect сверяет loc= с TEST_BAD_COUNTRIES)
 #PROBE_URL=https://www.youtube.com/generate_204
 #PING_SAMPLES=3
 #PING_TIMEOUT=2.0

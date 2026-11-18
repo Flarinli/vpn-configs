@@ -122,7 +122,11 @@ def default_settings():
         "INCLUDE_NAMES": "",
         "PRIORITY_NAMES": "",        # regex: совпавшие узлы ставятся в начало списка
         # проверка/выбор узлов
-        "TEST_URL": "https://www.youtube.com/generate_204",
+        # TEST_URL — cdn-cgi/trace: autoselect сверяет loc= с TEST_BAD_COUNTRIES.
+        # Код HTTP не отличает живой туннель от утечки в direct-out: на сетях
+        # без фильтрации заблокированные сайты открыты и напрямую.
+        "TEST_URL": "https://www.cloudflare.com/cdn-cgi/trace",
+        "TEST_BAD_COUNTRIES": "RU",   # выход из этих стран = туннель не работает
         "PROBE_URL": "https://www.youtube.com/generate_204",
         "PING_SAMPLES": "3",
         "PING_TIMEOUT": "2.0",
