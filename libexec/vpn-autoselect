@@ -226,6 +226,13 @@ def _stream(net, q, default_sni):
         ts = {"path": q.get("path", "/"), "mode": q.get("mode", "auto")}
         if q.get("host"):
             ts["host"] = q.get("host")
+        # extra=<json> из share-ссылки — параметры padding-обфускации; сервер
+        # молча глушит соединения без них (см. LTE-пул подписки 11.2026)
+        if q.get("extra"):
+            try:
+                ts.update(json.loads(q["extra"]))
+            except ValueError:
+                LOG("[W] %s: не удалось разобрать extra=<json>" % q.get("sni", ""))
     elif transport == "tcp" and q.get("headerType") == "http":
         ts = {"header": {"type": "http",
                          "request": {"version": "1.1",
