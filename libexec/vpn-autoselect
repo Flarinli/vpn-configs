@@ -429,7 +429,13 @@ def build_config(nodes, iface):
                            # с PRIORITY_NAMES балансер пинается на приоритетные ноды,
                            # чтобы страна выхода не менялась на лету
                            "selector": prio_tags or ["node-"],
-                           "strategy": {"type": "leastPing"}}],
+                           # leastLoad(expected=3) раскидывает соединения по 3 лучшим ЖИВЫМ
+                           # нодам по данным burst-observatory. leastPing залипал на одной
+                           # ноде: при живом TCP-ping, но глухом xhttp-канале, ронял ВЕСЬ
+                           # прокси-трафик до следующего прогона autoselect (до 10 минут).
+                           "strategy": {"type": "leastLoad",
+                                        "settings": {"baselines": ["400ms"],
+                                                     "expected": 3}}}],
             "rules": rules,
         },
         "burstObservatory": {
@@ -437,8 +443,10 @@ def build_config(nodes, iface):
             "pingConfig": {
                 "destination": CFG["PROBE_URL"],
                 "connectivity": CFG["PROBE_URL"],
-                "interval": "1m",
-                "timeout": "4s",
+                # 30s: мёртвую ноду observatory замечает не позже чем через минуту,
+                # и leastLoad успевает убрать её из ротации (при 1m — до 2-3 минут глухоты)
+                "interval": "30s",
+                "timeout": "3s",
                 "sampling": 2,
                 "idleTimeout": "30s",
             },
