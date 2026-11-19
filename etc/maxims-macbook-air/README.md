@@ -40,6 +40,19 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tgwsproxy.rs.plist
 VPN-провайдера — та же инфраструктура) — при ротации провайдером обновить
 `TG_CF_DOMAIN` и перезапустить: `launchctl kickstart -k gui/$(id -u)/com.tgwsproxy.rs`.
 
+### tg-direct-routes (LaunchDaemon `com.tgwsproxy.direct-routes`)
+
+Каждые 60с пиннит диапазоны Telegram-DC напрямую через физический шлюз,
+чтобы TG не зависел от utun: `/usr/local/sbin/tg-direct-routes.sh`,
+копия в `etc/maxims-macbook-air/tg-direct-routes.sh`. В списке ТОЛЬКО
+диапазоны Telegram (91.108.0.0/16, 149.154.160.0/20).
+
+⚠️ НЕ добавлять туда диапазоны Cloudflare (104.16.0.0/13, 172.64.0.0/13):
+CF-пин уводит мимо vpn-split весь Cloudflare-трафик, включая
+`auth.openai.com` — Codex/ChatGPT получает 403 из-за выхода с RU-IP
+(cf-ray …-DME). CF-домены провайдера и так ходят напрямую через
+sing-box (`final: direct`), пин им не нужен.
+
 ## Что не хранится в репо
 
 `/etc/vpn-split/vpn-split.conf` в репо НЕ хранится: файл содержит токен
