@@ -658,10 +658,13 @@ def main():
     restart_xray()
     time.sleep(1.5)
 
+    # после рестарта xray+burs-observatory холодные ~полминуты: свежие соединения
+    # через LTE-ноды часто падают, поэтому health-checkу нужно больше попыток,
+    # иначе ежедневный apply при сбросе суточной квоты уходит в откат
     country, t = tunnel_exit_country(socks, timeout=10)
     attempt = 1
-    while (country is None or country in bad) and attempt < 3:
-        time.sleep(3)
+    while (country is None or country in bad) and attempt < 6:
+        time.sleep(5)
         country, t = tunnel_exit_country(socks, timeout=10)
         attempt += 1
 
