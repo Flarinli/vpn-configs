@@ -281,7 +281,18 @@ def render_singbox(cfg, os_name=OS_NAME, iface=None, extra_proxy=None, extra_dir
     d["log"]["level"] = cfg["LOG_LEVEL"]
 
     servers = {s["tag"]: s for s in d["dns"]["servers"]}
-    servers["dns-direct"]["server"] = cfg["DNS_DIRECT"]
+    # DNS_DIRECT — IP/хост UDP-резолвера или URL схемы tls:// https:// quic:// h3://
+    # (напр. https://1.1.1.1), когда провайдер блокирует UDP 53: прямой DNS пойдёт по TCP.
+    m = re.match(r"^(tls|https|quic|h3)://([^/:?]+)(?::(\d+))?([/?].*)?$", cfg["DNS_DIRECT"])
+    if m:
+        servers["dns-direct"]["type"] = m.group(1)
+        servers["dns-direct"]["server"] = m.group(2)
+        if m.group(3):
+            servers["dns-direct"]["server_port"] = int(m.group(3))
+        if m.group(1) == "https" and m.group(4) not in (None, "/", "/dns-query"):
+            servers["dns-direct"]["path"] = m.group(4)
+    else:
+        servers["dns-direct"]["server"] = cfg["DNS_DIRECT"]
     servers["dns-proxy"]["server"] = cfg["DNS_PROXY"]
     dns_proxy_domains = split_list(cfg["DNS_PROXY_DOMAINS"])
     dns_proxy_domains += [x for x in proxy_domains if x not in dns_proxy_domains]

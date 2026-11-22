@@ -146,6 +146,12 @@ cat /var/lib/vpn-split/status.json                        # текущая но�
   и `vpn-split-xray.out.log` (xray); статус служб — `Get-Service vpn-split-tun, vpn-split-xray`;
   история задачи — Планировщик заданий → vpn-split-autoselect.
 
+Если напрямую резолвятся одни заблокированные домены, а прямые (ya.ru и т.п.)
+молчат — провайдер блокирует UDP 53 наружу, а hijack-dns пересобирает все
+запросы на `DNS_DIRECT`. Пропишите DoH/TLS-резолвер, чтобы прямой DNS шёл
+по TCP: в `vpn-split.conf` укажите `DNS_DIRECT=https://1.1.1.1` (поддерживаются
+схемы `tls:// https:// quic:// h3://`) и перезапустите TUN-службу.
+
 ## Обновления
 
 Обновления приходят сами, в два шага:
