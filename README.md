@@ -24,6 +24,52 @@ WinSW + Планировщик заданий)**, amd64/arm64.
 
 ## Установка
 
+### Вариант A — подписка vlesvpn (по умолчанию)
+
+```bash
+git clone … vpn-configs && cd vpn-configs
+sudo VPN_SPLIT_SUB_URL='https://…/sub/…' ./install.sh        # Linux / macOS
+```
+
+### Вариант B — узлы из AmneziaVPN (ветка amnezia)
+
+ vpn-split использует тот же TUN (sing-box) и xray, но список узлов берёт
+ не из подписки, а из файла, выгруженного из AmneziaVPN.
+
+```bash
+# 1) установить AmneziaVPN и добавить серверы (GUI), затем выгрузить узлы
+python3 tools/amnezia-export.py -o /tmp/amnezia-nodes.txt
+
+# 2) поставить vpn-split (SUB_URL пусто)
+sudo ./install.sh --no-start
+
+# 3) указать локальный список узлов
+echo 'NODES_FILE=/etc/vpn-split/nodes.txt' | sudo tee -a /etc/vpn-split/vpn-split.conf
+sudo cp /tmp/amnezia-nodes.txt /etc/vpn-split/nodes.txt
+sudo chmod 600 /etc/vpn-split/nodes.txt
+
+# 4) запустить
+sudo vpn-autoselect --force
+```
+
+Linux (если нужно само приложение Amnezia): официальный установщик
+`AmneziaVPN_*_linux_x64.run` с <https://github.com/amnezia-vpn/amnezia-client/releases>
+(ветка `amnezia` vpn-split само приложение не ставит — только выгружает узлы).
+
+**Важно:** туннель поднимает vpn-split (sing-box TUN + xray). Сам AmneziaVPN
+лучше закрыть, чтобы он не поднимал второй TUN и не перехватывал маршруты.
+
+На Linux, где Amnezia ещё не установлена, узлы можно перенести с macOS:
+
+```bash
+scp /tmp/amnezia-nodes.txt user@linus:/tmp/amnezia-nodes.txt
+# на Linus:
+sudo install -m 600 /tmp/amnezia-nodes.txt /etc/vpn-split/nodes.txt
+echo 'NODES_FILE=/etc/vpn-split/nodes.txt' | sudo tee -a /etc/vpn-split/vpn-split.conf
+```
+
+### Вариант A — подписка vlesvpn (по умолчанию)
+
 ```bash
 git clone … vpn-configs && cd vpn-configs
 sudo VPN_SPLIT_SUB_URL='https://…/sub/…' ./install.sh        # Linux / macOS
